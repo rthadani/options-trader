@@ -1,0 +1,19 @@
+{
+  "name": "fetch_filing_item",
+  "description": "Extract a specific Item section from a 10-K or 10-Q filing. Common items: \"1\" Business, \"1A\" Risk Factors, \"3\" Legal Proceedings, \"7\" MD&A, \"7A\" Quantitative and Qualitative Market Risk, \"8\" Financial Statements. Read-only.",
+  "annotations": {"readOnlyHint": true},
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "accession": {
+        "type": "string",
+        "description": "SEC accession number with dashes, e.g. \"0000320193-25-000079\". Get this from fetch_filings."
+      },
+      "item_id": {
+        "type": "string",
+        "description": "Item identifier per SEC form. \"7\" for MD&A, \"1A\" for Risk Factors, \"3\" for Legal Proceedings, etc."
+      }
+    },
+    "required": ["accession", "item_id"]
+  }
+}

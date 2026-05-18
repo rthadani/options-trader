@@ -1,0 +1,10 @@
+---
+name: Near Support
+description: Price within 1% of daily pivot S1 and RSI oversold; candidates for support-bounce longs
+universe: latest_indicators
+tags: [support, pivot, oversold, mean-reversion]
+---
+SELECT symbol FROM latest_indicators
+WHERE close BETWEEN pivot_s1 * 0.99 AND pivot_s1 * 1.01
+  AND rsi_14 < 40
+ORDER BY rsi_14 ASC LIMIT 25

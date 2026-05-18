@@ -1,0 +1,21 @@
+# Build artifacts
+.cpcache/
+target/
+
+# Database and logs
+cache/
+*.duckdb
+*.log
+
+# Env config (contains secrets)
+.envrc
+
+# macOS
+.DS_Store
+
+
+# nREPL
+.nrepl-port
+
+# clj-kondo import cache
+.clj-kondo/imports/

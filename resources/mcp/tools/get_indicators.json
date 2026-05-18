@@ -1,0 +1,15 @@
+{
+  "name": "get_indicators",
+  "description": "Return the latest computed technical indicators for one or more symbols.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbols": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "List of ticker symbols (e.g. [\"AAPL\", \"MSFT\"])."
+      }
+    },
+    "required": ["symbols"]
+  }
+}

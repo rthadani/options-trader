@@ -1,0 +1,7 @@
+---
+name: Buy Premium Long Straddle
+description: Strong directional momentum stocks where buying a straddle captures the next move
+universe: latest_indicators
+tags: [premium-buying, long-straddle, momentum, directional]
+---
+SELECT symbol FROM latest_indicators WHERE adx_14 > 30 AND macd_hist > 0 ORDER BY adx_14 DESC LIMIT 15

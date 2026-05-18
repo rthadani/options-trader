@@ -1,0 +1,188 @@
+(ns options-trader.cli
+  (:require [aero.core                       :as aero]
+            [clojure.java.io                 :as io]
+            [clojure.string                  :as str]
+            [clojure.tools.cli               :as tools-cli]
+            [options-trader.actions.core     :as actions]
+            [options-trader.data.ibkr        :as ibkr]
+            [options-trader.data.universes   :as universes]
+            [options-trader.db.duckdb        :as duckdb]
+            [options-trader.db.refresh       :as refresh]
+            [options-trader.portfolio.core   :as portfolio]
+            [options-trader.screener.registry :as screener])
+  (:gen-class))
+
+(def ^:private cli-options
+  [["-h" "--help" "Show usage"]
+   ["-p" "--profile PROFILE" "Config profile" :default "dev"]
+   ["-u" "--universe NAME"   "Universe (sp500/nasdaq100/...)"]
+   ["-s" "--symbols CSV"     "Comma-separated symbols (overrides --universe)"]
+   ["-b" "--bar-size SIZE"   "Intraday bar size, e.g. \"15 mins\"" :default "15 mins"]
+   ["-a" "--account ACCOUNT" "IBKR account id (auto-detected from TWS handshake if omitted)"]
+   [nil  "--allow-orders"    "Enable order execution" :default false]])
+
+(defn- print-usage [summary]
+  (println "Usage: options-trader <subcommand> [options]")
+  (println)
+  (println "Subcommands:")
+  (println "  refresh-daily        Bars (daily) + indicator recompute")
+  (println "  refresh-intraday     Bars (intraday, --bar-size '15 mins')")
+  (println "  refresh-news         News headlines + sentiment")
+  (println "  refresh-fundamentals EDGAR-backed fundamentals + ratios")
+  (println "  refresh-filings      EDGAR filing list per symbol")
+  (println "  refresh-universes    Re-fetch universe membership; log drift")
+  (println "  refresh-portfolio    Positions + account summary")
+  (println "  ping                 IB + DB connectivity smoke test")
+  (println)
+  (println "  portfolio            Show current portfolio")
+  (println "  screen <name>        Run a saved screen")
+  (println "  order BUY|SELL SYM N Place an order (requires --allow-orders)")
+  (println)
+  (println "Options:")
+  (println summary))
+
+;;; ── Shared setup ───────────────────────────────────────────────────────────
+
+(defn- load-config [profile]
+  (aero/read-config (io/resource "config.edn") {:profile (keyword profile)}))
+
+(defn- open-ds! [cfg]
+  (duckdb/bootstrap! cfg)
+  (duckdb/datasource cfg))
+
+(defn- open-ib! [cfg]
+  (let [{:keys [host port client-id]} (:ibkr cfg)
+        c (ibkr/connect! host port (or client-id 1))]
+    (when (= :unavailable c)
+      (throw (ex-info "TWS unavailable — is IB Gateway/TWS running?"
+                      {:host host :port port :client-id client-id})))
+    c))
+
+(defn- resolve-symbols [opts ds]
+  (cond
+    (:symbols opts)
+    (mapv str/trim (str/split (:symbols opts) #","))
+
+    (:universe opts)
+    (let [u (str/lower-case (:universe opts))]
+      (or (seq (universes/ticker-fetch (keyword u)))
+          (throw (ex-info (str "no symbols found for universe " u) {:universe u}))))
+
+    :else
+    (throw (ex-info "must supply --symbols or --universe" {}))))
+
+;;; ── Subcommand dispatch ────────────────────────────────────────────────────
+
+(defmulti run-subcommand (fn [cmd _opts _args] cmd))
+
+(defn- ds-of [opts]
+  (or (:ds opts) (open-ds! (load-config (:profile opts)))))
+
+(defn- conn-of [opts]
+  (or (:conn opts) (open-ib! (load-config (:profile opts)))))
+
+(defmethod run-subcommand :refresh-daily [_ opts _]
+  (let [ds      (ds-of opts)
+        conn    (conn-of opts)
+        symbols (resolve-symbols opts ds)]
+    (try
+      (refresh/refresh-bars-daily! {:conn conn :ds ds :symbols symbols})
+      (finally (when-not (:conn opts) (ibkr/disconnect!))))))
+
+(defmethod run-subcommand :refresh-intraday [_ opts _]
+  (let [ds      (ds-of opts)
+        conn    (conn-of opts)
+        symbols (resolve-symbols opts ds)]
+    (try
+      (refresh/refresh-bars-intraday!
+        {:conn conn :ds ds :symbols symbols :bar-size (:bar-size opts)})
+      (finally (when-not (:conn opts) (ibkr/disconnect!))))))
+
+(defmethod run-subcommand :refresh-news [_ opts _]
+  (let [ds      (ds-of opts)
+        conn    (conn-of opts)
+        symbols (resolve-symbols opts ds)]
+    (try
+      (refresh/refresh-news! {:conn conn :ds ds :symbols symbols})
+      (finally (when-not (:conn opts) (ibkr/disconnect!))))))
+
+(defmethod run-subcommand :refresh-fundamentals [_ opts _]
+  (refresh/refresh-fundamentals! {:ds (ds-of opts)}))
+
+(defmethod run-subcommand :refresh-filings [_ opts _]
+  (let [ds      (ds-of opts)
+        symbols (resolve-symbols opts ds)]
+    (refresh/refresh-filings! {:ds ds :symbols symbols})))
+
+(defmethod run-subcommand :refresh-universes [_ opts _]
+  (refresh/refresh-universes! {:ds (ds-of opts)}))
+
+(defmethod run-subcommand :refresh-portfolio [_ opts _]
+  (let [ds      (ds-of opts)
+        conn    (conn-of opts)
+        account (or (:account opts) (ibkr/default-account))]
+    (when (nil? account)
+      (throw (ex-info "no account-id; TWS handshake didn't supply one — pass --account explicitly" {})))
+    (try
+      (refresh/refresh-portfolio! {:conn conn :ds ds :account-id account})
+      (finally (when-not (:conn opts) (ibkr/disconnect!))))))
+
+(defmethod run-subcommand :ping [_ opts _]
+  (let [ds   (ds-of opts)
+        conn (or (:conn opts)
+                 (try (conn-of opts) (catch Throwable _ nil)))]
+    (try
+      (refresh/ping {:conn conn :ds ds})
+      (finally (when (and conn (not (:conn opts))) (ibkr/disconnect!))))))
+
+(defmethod run-subcommand :portfolio [_ opts _]
+  (let [src (portfolio/->MockSource)]
+    {:subcommand      :portfolio
+     :account-id      (:account opts)
+     :positions       (portfolio/positions src)
+     :account-summary (portfolio/account-summary src)}))
+
+(defmethod run-subcommand :screen [_ opts args]
+  (let [ds (:ds opts)]
+    (if (seq args)
+      (let [r (if ds
+                (screener/run-screen ds (first args))
+                {:results []})]
+        {:subcommand :screen :results (:results r []) :count (count (:results r []))})
+      {:subcommand :screen :screens (if ds (screener/list-screens ds) [])})))
+
+(defmethod run-subcommand :refresh [_ opts _]
+  (let [r (actions/handle-action {:type :refresh-quotes :account-id (:account opts)})]
+    {:subcommand :refresh :result r}))
+
+(defmethod run-subcommand :order [_ opts args]
+  (if (:allow-orders opts)
+    (let [[action sym qty] args]
+      (actions/handle-action {:type     :place-order
+                              :action   (some-> action str/upper-case)
+                              :symbol   sym
+                              :quantity (some-> qty parse-long)}))
+    {:error   "orders_disabled"
+     :message "Pass --allow-orders to enable order execution"}))
+
+(defmethod run-subcommand :default [cmd _ _]
+  {:error (str "unknown subcommand: " (name cmd))})
+
+(defn dispatch [argv]
+  (let [{:keys [options arguments summary errors]}
+        (tools-cli/parse-opts argv cli-options :in-order true)]
+    (cond
+      errors            {:error (first errors)}
+      (:help options)   (do (print-usage summary) {:help true})
+      (empty? arguments) (do (print-usage summary) {:error "no subcommand given"})
+      :else
+      (let [cmd (keyword (first arguments))]
+        (try
+          (run-subcommand cmd options (vec (rest arguments)))
+          (catch Throwable t
+            {:error (.getMessage t) :ex-data (ex-data t)}))))))
+
+(defn -main [& args]
+  (let [result (dispatch (vec args))]
+    (println result)
+    (when (:error result) (System/exit 1))))

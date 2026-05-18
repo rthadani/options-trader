@@ -1,0 +1,49 @@
+{:indicators [{:kind :RSI               :params [14]      :column :rsi_14}
+              {:kind :ATR               :params [14]      :column :atr_14   :percentile-windows [126]}
+              {:kind :BollingerBandWidth :params [20 2.0] :column :bb_width  :percentile-windows [126]}
+              {:kind :SMA               :params [50]      :column :sma_50}
+              {:kind :SMA               :params [200]     :column :sma_200}
+              {:kind :EMA               :params [50]      :column :ema_50}
+              {:kind :ADX               :params [14]      :column :adx_14}
+              {:kind :DX                :params [14]      :column :dx}
+              {:kind :PlusDI            :params [14]      :column :plus_di}
+              {:kind :MinusDI           :params [14]      :column :minus_di}
+              {:kind :AroonUp           :params [25]      :column :aroon_up}
+              {:kind :AroonDown         :params [25]      :column :aroon_down}
+              {:kind :AroonOsc          :params [25]      :column :aroon_osc}
+              {:kind :Chop              :params [14]      :column :chop}
+              {:kind :StochasticOscillatorK :params [14]  :column :stoch_k}
+              {:kind :StochasticOscillatorD :params [14]  :column :stoch_d}
+              {:kind :StochasticRSI     :params [14]      :column :stoch_rsi}
+              {:kind :WilliamsR         :params [14]      :column :williams_r_14}
+              {:kind :CCI               :params [20]      :column :cci_20}
+              {:kind :CMO               :params [14]      :column :cmo_14}
+              {:kind :MACD             :params [12 26]        :column :macd}
+              {:kind :MACDSignal       :params [12 26 9]      :column :macd_signal}
+              {:kind :MACDHist         :params [12 26 9]      :column :macd_hist}
+              {:kind :ParabolicSAR     :params [0.02 0.02 0.2] :column :psar}
+              {:kind :OBV              :params []             :column :obv}
+              {:kind :STDDEV           :params [20]           :column :stddev_20  :percentile-windows [126]}
+              {:kind :UlcerIndex       :params [14]           :column :ulcer_14}
+              {:kind :MassIndex        :params [9 25]         :column :mass_index}
+              {:kind :CMF              :params [20]           :column :cmf_20}
+              {:kind :BBUpper          :params [20 2.0]       :column :bb_upper}
+              {:kind :BBLower          :params [20 2.0]       :column :bb_lower}
+              {:kind :PercentB         :params [20 2.0]       :column :percent_b}
+              {:kind :KCUpper          :params [20 2.0 10]    :column :kc_upper}
+              {:kind :KCLower          :params [20 2.0 10]    :column :kc_lower}
+              {:kind :Fisher           :params [10]           :column :fisher_10}
+              {:kind :PivotPoint       :params []             :column :pivot_p}
+              {:kind :PivotR1          :params []             :column :pivot_r1}
+              {:kind :PivotR2          :params []             :column :pivot_r2}
+              {:kind :PivotS1          :params []             :column :pivot_s1}
+              {:kind :PivotS2          :params []             :column :pivot_s2}
+              {:kind :FibR38           :params []             :column :fib_r_38}
+              {:kind :FibR62           :params []             :column :fib_r_62}
+              {:kind :FibS38           :params []             :column :fib_s_38}
+              {:kind :FibS62           :params []             :column :fib_s_62}]
+ :composites [{:column :ttm_squeeze_flag   :kind :ttm-squeeze   :requires [:bb_upper :bb_lower :kc_upper :kc_lower]}
+              {:column :macd_cross_flag    :kind :macd-cross    :requires [:macd :macd_signal]}
+              {:column :mass_reversal_flag :kind :mass-reversal :requires [:mass_index]}
+              {:column :psar_flip_flag     :kind :psar-flip     :requires [:psar :close]}
+              {:column :obv_trend          :kind :obv-trend     :requires [:obv]}]}

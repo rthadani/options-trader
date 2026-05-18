@@ -1,0 +1,14 @@
+{
+  "name": "fetch_corporate_actions",
+  "description": "Fetch corporate actions (dividends, splits, etc.) for a single ticker. Use \"include\" to scope; default returns the omnibus action stream. Read-only.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol":  {"type": "string", "description": "Ticker symbol."},
+      "include": {"type": "array",
+                  "items": {"type": "string", "enum": ["dividends", "splits", "all"]},
+                  "description": "Slices to fetch. Defaults to [\"all\"]."}
+    },
+    "required": ["symbol"]
+  }
+}

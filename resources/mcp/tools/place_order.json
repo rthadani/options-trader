@@ -1,0 +1,15 @@
+{
+  "name": "place_order",
+  "description": "Submit an order to IBKR. Disabled by default; returns error unless :allow-orders? is true.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol": {"type": "string", "description": "Ticker symbol."},
+      "action": {"type": "string", "enum": ["BUY", "SELL"], "description": "Order side."},
+      "quantity": {"type": "number", "description": "Number of contracts or shares."},
+      "order_type": {"type": "string", "enum": ["MKT", "LMT", "STP"], "description": "Order type."},
+      "limit_price": {"type": "number", "description": "Limit price (required for LMT orders)."}
+    },
+    "required": ["symbol", "action", "quantity", "order_type"]
+  }
+}

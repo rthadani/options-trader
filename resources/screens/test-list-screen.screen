@@ -1,0 +1,7 @@
+---
+name: test-list-screen
+description: 
+universe: latest_indicators
+tags: []
+---
+SELECT symbol FROM latest_indicators WHERE adx_14 > 20

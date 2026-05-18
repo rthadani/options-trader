@@ -1,0 +1,14 @@
+{
+  "name": "portfolio_summary",
+  "description": "Return current positions and account summary for the configured account.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "account_id": {
+        "type": "string",
+        "description": "IBKR account identifier (optional; defaults to configured account)."
+      }
+    },
+    "required": []
+  }
+}

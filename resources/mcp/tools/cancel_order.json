@@ -1,0 +1,14 @@
+{
+  "name": "cancel_order",
+  "description": "Cancel an open order by order id. Disabled by default; returns error unless :allow-orders? is true.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "order_id": {
+        "type": "string",
+        "description": "The order identifier returned by place_order."
+      }
+    },
+    "required": ["order_id"]
+  }
+}

@@ -1,0 +1,7 @@
+---
+name: Sell Premium Iron Condor
+description: Range-bound choppy stocks suitable for selling premium via iron condors
+universe: latest_indicators
+tags: [premium-selling, iron-condor, range-bound, volatility]
+---
+SELECT symbol FROM latest_indicators WHERE chop > 60 AND adx_14 < 20 ORDER BY chop DESC LIMIT 15

@@ -1,0 +1,7 @@
+# Copy this file to .envrc and fill in your API keys.
+# Run `direnv allow` after editing.
+
+export MOONSHOT_API_KEY=
+export ZAI_API_KEY=
+export OPENROUTER_API_KEY=
+export ANTHROPIC_API_KEY=

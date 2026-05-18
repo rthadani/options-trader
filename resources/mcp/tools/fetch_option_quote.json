@@ -1,0 +1,18 @@
+{
+  "name": "fetch_option_quote",
+  "description": "Fetch a snapshot quote (bid, ask, IV, greeks) for a single option contract. Read-only. Use fetch_option_chain first to discover valid expirations and strikes.",
+  "annotations": {"readOnlyHint": true},
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol":     {"type": "string", "description": "Underlying ticker, e.g. \"AAPL\"."},
+      "strike":     {"type": "number", "description": "Strike price, e.g. 220.0."},
+      "expiry":     {"type": "string", "description": "Expiration date in YYYYMMDD form, e.g. \"20260918\"."},
+      "right":      {"type": "string", "enum": ["C", "P"], "description": "\"C\" for call, \"P\" for put."},
+      "exchange":   {"type": "string", "description": "Optional. Defaults to \"SMART\"."},
+      "currency":   {"type": "string", "description": "Optional. Defaults to \"USD\"."},
+      "tick_types": {"type": "string", "description": "Optional. Comma-separated IBKR generic tick codes. Defaults to the full superset (option vol/OI/IV, historical vol, RT volume, shortable, fundamental ratios, dividends, etc.) — TWS silently omits ticks that don't apply to the contract type, so requesting the union is free. Pass a narrower string like \"100,101,106\" if you only want specific fields."}
+    },
+    "required": ["symbol", "strike", "expiry", "right"]
+  }
+}

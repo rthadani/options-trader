@@ -1,0 +1,19 @@
+{
+  "name": "fetch_option_chain",
+  "description": "Fetch the option chain (available expirations and strikes) for an underlying symbol. Returns a flat union across exchanges. Read-only.",
+  "annotations": {"readOnlyHint": true},
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol": {
+        "type": "string",
+        "description": "Underlying ticker symbol, e.g. \"AAPL\"."
+      },
+      "expiry_prefix": {
+        "type": "string",
+        "description": "Optional YYYY or YYYYMM prefix to filter expirations. e.g. \"202609\" keeps only September 2026 expirations."
+      }
+    },
+    "required": ["symbol"]
+  }
+}

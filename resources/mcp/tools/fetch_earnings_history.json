@@ -1,0 +1,12 @@
+{
+  "name": "fetch_earnings_history",
+  "description": "Fetch historical earnings periods for a single ticker (date, EPS, revenue, surprise). Read-only.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol":  {"type": "string", "description": "Ticker symbol."},
+      "limit":   {"type": "integer", "description": "Max periods to return (most recent first). Defaults to all."}
+    },
+    "required": ["symbol"]
+  }
+}

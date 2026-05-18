@@ -1,0 +1,6 @@
+{:dot-replacements {"BRK.B" "BRK B"
+                   "BRK.A" "BRK A"
+                   "BF.B"  "BF B"
+                   "BF.A"  "BF A"}
+ :footnote-pattern "[\\^\\*\\[].+"
+ :blank-filter     true}

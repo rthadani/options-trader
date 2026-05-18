@@ -1,0 +1,14 @@
+{
+  "name": "run_screen",
+  "description": "Execute a saved screen by name or id and return matching symbols.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "screen_id": {
+        "type": "string",
+        "description": "Screen name or UUID to execute."
+      }
+    },
+    "required": ["screen_id"]
+  }
+}

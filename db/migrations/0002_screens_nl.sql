@@ -1,0 +1,2 @@
+ALTER TABLE screens ADD COLUMN IF NOT EXISTS description_hash VARCHAR;
+ALTER TABLE screens ADD COLUMN IF NOT EXISTS cached_sql       TEXT;

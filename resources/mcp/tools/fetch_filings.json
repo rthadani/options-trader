@@ -1,0 +1,14 @@
+{
+  "name": "fetch_filings",
+  "description": "Fetch SEC EDGAR filings (10-K, 10-Q, 8-K, 13D/G) for a single ticker. Read-only.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol":     {"type": "string", "description": "Ticker symbol."},
+      "form_type":  {"type": "string", "description": "SEC form type (e.g. \"10-K\", \"10-Q\", \"8-K\", \"13D\"). Omit for all forms."},
+      "start_date": {"type": "string", "description": "ISO date — filings on or after."},
+      "end_date":   {"type": "string", "description": "ISO date — filings on or before."}
+    },
+    "required": ["symbol"]
+  }
+}

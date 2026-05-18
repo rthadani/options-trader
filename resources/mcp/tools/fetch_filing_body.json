@@ -1,0 +1,20 @@
+{
+  "name": "fetch_filing_body",
+  "description": "Fetch the full body of a SEC EDGAR filing by accession number. Returns the document as plain text (default) or HTML. Read-only.",
+  "annotations": {"readOnlyHint": true},
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "accession": {
+        "type": "string",
+        "description": "SEC accession number with dashes, e.g. \"0000320193-25-000079\". Get this from fetch_filings."
+      },
+      "format": {
+        "type": "string",
+        "enum": ["text", "html"],
+        "description": "Body format. Defaults to text — strip HTML so the agent reads prose cleanly."
+      }
+    },
+    "required": ["accession"]
+  }
+}

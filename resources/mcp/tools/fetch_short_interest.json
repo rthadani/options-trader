@@ -1,0 +1,14 @@
+{
+  "name": "fetch_short_interest",
+  "description": "Fetch short-interest history and current borrow rate for a single ticker. Read-only.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol":  {"type": "string", "description": "Ticker symbol."},
+      "include": {"type": "array",
+                  "items": {"type": "string", "enum": ["history", "borrow"]},
+                  "description": "Slices to fetch. Defaults to both."}
+    },
+    "required": ["symbol"]
+  }
+}

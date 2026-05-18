@@ -1,0 +1,17 @@
+{
+  "name": "run_sql",
+  "description": "Execute a raw SQL SELECT against the DuckDB warehouse and return matching rows. Full DuckDB SQL is supported: joins, CTEs, window functions, regex, unnest, etc. The agent is expected to issue read-only queries; writes are owned by the refresh CLI and action tools. Available tables include latest_indicators, indicator_history, bars_daily, sector_index, positions, account_summary, screens.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Full SQL statement. Example: SELECT i.symbol, i.close, i.rsi_14, i.pivot_r1 FROM latest_indicators i WHERE i.rsi_14 > 70 AND i.close BETWEEN i.pivot_r1 * 0.99 AND i.pivot_r1 * 1.01 ORDER BY i.rsi_14 DESC LIMIT 25"
+      }
+    },
+    "required": ["query"]
+  },
+  "annotations": {
+    "readOnlyHint": true
+  }
+}

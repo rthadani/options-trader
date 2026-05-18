@@ -1,0 +1,12 @@
+{
+  "name": "fetch_xbrl_facts",
+  "description": "Fetch XBRL facts (e.g. us-gaap concepts) from EDGAR for a given CIK. Returns a concept-keyed map of fact values. Read-only.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "cik":      {"type": "string", "description": "SEC CIK (zero-padded numeric, e.g. \"0000320193\" for Apple)."},
+      "taxonomy": {"type": "string", "description": "XBRL taxonomy. Defaults to \"us-gaap\"."}
+    },
+    "required": ["cik"]
+  }
+}

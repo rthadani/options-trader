@@ -1,0 +1,14 @@
+{
+  "name": "fetch_fundamentals",
+  "description": "Fetch fundamental financial statements (income / balance sheet / cashflow) for a single ticker via the configured source. Returns normalised rows. Read-only.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol":     {"type": "string", "description": "Ticker symbol."},
+      "report":     {"type": "string",
+                     "enum": ["ReportsFinStatements", "ReportSnapshot", "ReportsFinSummary"],
+                     "description": "IB report type. Defaults to ReportsFinStatements."}
+    },
+    "required": ["symbol"]
+  }
+}

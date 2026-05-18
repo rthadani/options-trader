@@ -1,0 +1,37 @@
+{:tasks
+ {repl
+  {:doc "Start an interactive nREPL session"
+   :override-builtin true
+   :task (clojure "-M:dev -m nrepl.cmdline --interactive")}
+
+  test
+  {:doc "Run the full test suite via Kaocha"
+   :task (clojure "-M:test")}
+
+  lint
+  {:doc "Lint source with clj-kondo (must be on PATH)"
+   :task (shell "clj-kondo --lint src test")}
+
+  format
+  {:doc "Check formatting with cljfmt (must be on PATH)"
+   :task (shell "cljfmt check src")}
+
+  run-tui
+  {:doc "Launch the options-trader application"
+   :task (clojure "-M:run")}
+
+  refresh-data
+  {:doc "Refresh market data (Phase 2 pending)"
+   :task (println "refresh-data: phase 2 pending")}
+
+  generate-fixtures
+  {:doc "Generate test fixtures (Phase 3 pending)"
+   :task (println "generate-fixtures: phase 3 pending")}
+
+  backup-db
+  {:doc "Back up the DuckDB database to cache/backups/"
+   :task (shell "bb tasks/backup-db.clj")}
+
+  prune-db
+  {:doc "Prune DuckDB backups older than 14 days"
+   :task (shell "bb tasks/prune-db.clj")}}}

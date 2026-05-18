@@ -1,0 +1,7 @@
+---
+name: Vol Expansion Squeeze
+description: Stocks where Bollinger Band width is compressed inside Keltner Channels, signaling imminent volatility expansion
+universe: latest_indicators
+tags: [volatility, squeeze, momentum]
+---
+SELECT symbol FROM latest_indicators WHERE bb_width < 5.0 AND adx_14 < 25 ORDER BY bb_width ASC LIMIT 20

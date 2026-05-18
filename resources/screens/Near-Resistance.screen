@@ -1,0 +1,10 @@
+---
+name: Near Resistance
+description: Price within 1% of daily pivot R1 and RSI overbought; candidates for resistance-rejection shorts
+universe: latest_indicators
+tags: [resistance, pivot, overbought, mean-reversion]
+---
+SELECT symbol FROM latest_indicators
+WHERE close BETWEEN pivot_r1 * 0.99 AND pivot_r1 * 1.01
+  AND rsi_14 > 60
+ORDER BY rsi_14 DESC LIMIT 25

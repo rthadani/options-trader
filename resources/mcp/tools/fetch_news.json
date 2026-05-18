@@ -1,0 +1,17 @@
+{
+  "name": "fetch_news",
+  "description": "Fetch news headlines and/or sentiment for a single ticker. Read-only — pulls from the configured news source (default: IBKR historical news).",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol":     {"type": "string", "description": "Ticker symbol, e.g. \"AAPL\"."},
+      "include":    {"type": "array",
+                     "items": {"type": "string", "enum": ["headlines", "sentiment"]},
+                     "description": "Which slices to fetch. Defaults to both."},
+      "limit":      {"type": "integer", "description": "Max headlines (default 10)."},
+      "start_date": {"type": "string", "description": "ISO date for headlines window start."},
+      "end_date":   {"type": "string", "description": "ISO date for headlines window end."}
+    },
+    "required": ["symbol"]
+  }
+}

@@ -1,0 +1,19 @@
+{:dev  {:db    {:path "dev.duckdb"}
+        :ibkr  {:host "127.0.0.1" :port 7497 :client-id 1}
+        :log   {:level :debug}
+        :data-sources
+        {;; SEC EDGAR backed by clojure-finance/edgarjure (edgar.api).
+         ;; :user-agent is required by SEC fair-access policy — use
+         ;; "<App or Name> <contact email>". May also be supplied via
+         ;; the EDGAR_USER_AGENT environment variable.
+         :edgar {:type :edgar
+                 :user-agent #or [#env EDGAR_USER_AGENT
+                                  "options-trader you@example.com"]}}}
+
+ :prod {:db    {:path "/data/options-trader.duckdb"}
+        :ibkr  {:host "127.0.0.1" :port 7496 :client-id 1}
+        :log   {:level :info}
+        :data-sources
+        {:edgar {:type :edgar
+                 :user-agent #or [#env EDGAR_USER_AGENT
+                                  "options-trader you@example.com"]}}}}

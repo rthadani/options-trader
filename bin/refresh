@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Cron-friendly wrapper around `clojure -M:cli refresh-<task>`.
+# Usage: bin/refresh <task> [extra args]
+#   task ∈ {daily, intraday, news, fundamentals, filings, universes, portfolio, ping}
+#
+# Examples:
+#   bin/refresh daily      --universe sp500
+#   bin/refresh intraday   --universe sp500 --bar-size "15 mins"
+#   bin/refresh news       --symbols AAPL,MSFT,SPY
+#   bin/refresh ping
+#
+# Output: appended to cache/logs/cron-<task>.log (one file per task).
+# Concurrency: flock prevents overlapping runs of the same task.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO"
+
+TASK="${1:-}"
+[ -z "$TASK" ] && { echo "usage: bin/refresh <task> [args...]" >&2; exit 64; }
+shift
+
+LOG_DIR="cache/logs"
+LOCK_DIR="cache/locks"
+mkdir -p "$LOG_DIR" "$LOCK_DIR"
+LOG="${LOG_DIR}/cron-${TASK}.log"
+LOCK="${LOCK_DIR}/${TASK}.lock"
+
+{
+  echo "── $(date -Is) start refresh-${TASK} ─────────────────────────"
+  flock -n "$LOCK" clojure -M:cli "refresh-${TASK}" "$@"
+  rc=$?
+  echo "── $(date -Is) end   refresh-${TASK} rc=${rc} ─────────────────"
+  exit $rc
+} >> "$LOG" 2>&1
