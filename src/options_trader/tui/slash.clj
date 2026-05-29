@@ -97,14 +97,24 @@
      :has-session? (boolean (:claude-session-id prior))}))
 
 (defn- handle-model
-  "/model           — show the active Claude model
-   /model <id>      — switch the model used by the next conversation
-                      (e.g. claude-opus-4-5, claude-haiku-4-5-20251001)"
+  "/model                    — show the active provider + model
+   /model <id>               — switch model on the current provider
+                               (e.g. claude-opus-4-5, claude-haiku-4-5-20251001)
+   /model <provider>:<id>    — switch provider + model
+                               (e.g. kimi:kimi-k2.5, ollama:qwen2.5-coder,
+                               minimax:MiniMax-M2.7, claude:claude-opus-4-5)"
   [_ctx args]
   (if-let [m (first args)]
-    (let [new-m (llm/set-model! m)]
-      {:cmd "/model" :status :ok :command :set-model :model new-m})
-    {:cmd "/model" :status :ok :command :show-model :model (llm/current-model)}))
+    (if (str/includes? m ":")
+      (let [[prov mod] (str/split m #":" 2)
+            p     (llm/set-provider! prov)
+            new-m (llm/set-model! mod)]
+        {:cmd "/model" :status :ok :command :set-model :provider p :model new-m})
+      (let [new-m (llm/set-model! m)]
+        {:cmd "/model" :status :ok :command :set-model
+         :provider (llm/current-provider) :model new-m}))
+    {:cmd "/model" :status :ok :command :show-model
+     :provider (llm/current-provider) :model (llm/current-model)}))
 
 ;;; ── Dispatch table ──────────────────────────────────────────────────────────
 

@@ -103,6 +103,51 @@
   (write-account-summary! [_ account-id summary]
     (upsert-account-summary! ds account-id summary)))
 
+(def ^:private price-max-wait-ms 10000)
+
+(defn- apply-price
+  "Set market-value + unrealized-pnl on a position from a normalized snapshot.
+   Uses last price, falling back to close. Options carry a ×100 multiplier;
+   IB avg-cost is already per-contract, so cost basis is qty × avg-cost."
+  [{:keys [opt-right qty avg-cost] :as pos} quote]
+  (let [price (or (:last quote) (:close quote))
+        mult  (if (and opt-right (seq (str opt-right))) 100.0 1.0)]
+    (if (and price qty)
+      (let [mv (* (double qty) (double price) mult)]
+        (assoc pos
+               :market-value   mv
+               :unrealized-pnl (- mv (* (double qty) (double (or avg-cost 0.0))))))
+      pos)))
+
+(defn- price-positions
+  "Enrich positions with a one-shot market-data snapshot per contract (by
+   conid). Fires every snapshot, waits a single window, then folds — so the
+   whole batch costs ~one window rather than N round-trips. reqPositions gives
+   no market value, so this is how the P&L columns get a price (current, else
+   prior close — mirroring TWS)."
+  [ib-client positions]
+  (if-not (some :conid positions)
+    positions
+    (let [accs     (mapv (fn [{:keys [conid]}]
+                           (when conid
+                             (ibkr/start-snapshot! ib-client
+                               {:conid conid :exchange "SMART" :currency "USD"})))
+                         positions)
+          priced?  (fn [acc]
+                     (let [q (ibkr/normalize-snapshot @acc)]
+                       (or (:last q) (:close q))))
+          deadline (+ (System/currentTimeMillis) price-max-wait-ms)]
+      ;; After-hours snapshots trickle in; resolve as soon as every contract has
+      ;; a price (fast during market hours), else give up at the deadline.
+      (loop []
+        (when (and (< (System/currentTimeMillis) deadline)
+                   (some (fn [acc] (and acc (not (priced? acc)))) accs))
+          (Thread/sleep 250)
+          (recur)))
+      (mapv (fn [pos acc]
+              (apply-price pos (when acc (ibkr/normalize-snapshot @acc))))
+            positions accs))))
+
 (defrecord IbkrSource [ib-client ds account-id]
   IAccountSource
   (positions [_]
@@ -113,24 +158,28 @@
         ib-client
         (fn [pos]
           (if (nil? pos)
-            (do
-              (write-positions! store account-id @result)
-              (deliver p @result))
+            (deliver p @result)
             (swap! result conj pos))))
-      (deref p 10000 [])))
+      (let [priced (price-positions ib-client (deref p 10000 []))]
+        (write-positions! store account-id priced)
+        priced)))
   (account-summary [_]
-    (let [row-atom (atom {})
-          p        (promise)
-          store    (->JdbcStore ds)]
+    (let [tags  (atom {})
+          p     (promise)
+          store (->JdbcStore ds)]
       (ibkr/req-account-summary
         ib-client
-        "NetLiquidation,TotalCashValue,BuyingPower,DayTradesRemaining"
+        "NetLiquidation,TotalCashValue,BuyingPower"
         (fn [row]
           (if (nil? row)
-            (let [summary @row-atom]
+            (let [summary {:net-liq      (get @tags "NetLiquidation")
+                           :cash         (get @tags "TotalCashValue")
+                           :buying-power (get @tags "BuyingPower")
+                           :day-pl       nil}]
               (write-account-summary! store account-id summary)
               (deliver p summary))
-            (swap! row-atom merge row))))
+            (when-let [tag (:tag row)]
+              (swap! tags assoc tag (some-> (:value row) parse-double))))))
       (deref p 10000 nil)))
   (realized-pnl [_ _ _]
     (throw (UnsupportedOperationException. "realized-pnl: not implemented for IbkrSource"))))
@@ -146,7 +195,8 @@
 (defn make-source
   [{:keys [portfolio]} ib-client ds]
   (case (get portfolio :source :mock)
-    :ibkr (->IbkrSource ib-client ds (get portfolio :account-id "DU123456"))
+    :ibkr (->IbkrSource ib-client ds (or (get portfolio :account-id)
+                                         (ibkr/default-account)))
     :mock (->MockSource)))
 
 (defn refresh-loop

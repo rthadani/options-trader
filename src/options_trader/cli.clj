@@ -1,9 +1,8 @@
 (ns options-trader.cli
-  (:require [aero.core                       :as aero]
-            [clojure.java.io                 :as io]
-            [clojure.string                  :as str]
+  (:require [clojure.string                  :as str]
             [clojure.tools.cli               :as tools-cli]
             [options-trader.actions.core     :as actions]
+            [options-trader.config           :as config]
             [options-trader.data.ibkr        :as ibkr]
             [options-trader.data.universes   :as universes]
             [options-trader.db.duckdb        :as duckdb]
@@ -43,9 +42,6 @@
 
 ;;; ── Shared setup ───────────────────────────────────────────────────────────
 
-(defn- load-config [profile]
-  (aero/read-config (io/resource "config.edn") {:profile (keyword profile)}))
-
 (defn- open-ds! [cfg]
   (duckdb/bootstrap! cfg)
   (duckdb/datasource cfg))
@@ -76,10 +72,10 @@
 (defmulti run-subcommand (fn [cmd _opts _args] cmd))
 
 (defn- ds-of [opts]
-  (or (:ds opts) (open-ds! (load-config (:profile opts)))))
+  (or (:ds opts) (open-ds! (config/load-config (:profile opts)))))
 
 (defn- conn-of [opts]
-  (or (:conn opts) (open-ib! (load-config (:profile opts)))))
+  (or (:conn opts) (open-ib! (config/load-config (:profile opts)))))
 
 (defmethod run-subcommand :refresh-daily [_ opts _]
   (let [ds      (ds-of opts)

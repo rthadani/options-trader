@@ -13,7 +13,7 @@
 (defonce ^:private conn-atom (atom nil))
 (defonce ^:private poller-atom (atom nil))
 
-(def ^:private poll-interval-ms 5000)
+(def ^:private poll-interval-ms 15000)
 
 ;;; ── State helpers ──────────────────────────────────────────────────────────
 

@@ -45,7 +45,8 @@
 (defmacro ^:private with-mock-ibkr
   "Stub ibkr/req-positions and ibkr/req-account-summary so they invoke the
    callback with the given canned data, then a terminal nil — matching the
-   stream-mode contract IbkrSource expects."
+   stream-mode contract IbkrSource expects. Account summary is emitted as
+   per-tag {:tag :value} events, the way TWS actually delivers it."
   [positions-data summary-data & body]
   `(with-redefs [ibkr/req-positions
                  (fn [_conn# cb#]
@@ -54,8 +55,11 @@
                    1)
                  ibkr/req-account-summary
                  (fn [_conn# _tags# cb#]
-                   (cb# ~summary-data)
-                   (cb# nil)
+                   (let [s# ~summary-data]
+                     (cb# {:tag "NetLiquidation" :value (str (:net-liq s#))})
+                     (cb# {:tag "TotalCashValue" :value (str (:cash s#))})
+                     (cb# {:tag "BuyingPower"    :value (str (:buying-power s#))})
+                     (cb# nil))
                    2)]
      ~@body))
 

@@ -8,10 +8,12 @@
    :account-id       nil
    :tws-status       :disconnected
    :messages         []
+   :activity         []
    :input            ""
    :cursor           0
    :scope            :scratch
    :model            "claude-opus-4-5"
+   :provider         :claude
    :streaming?       false
    :exit?            false
    :status-line      nil
@@ -22,11 +24,21 @@
 (defn reset-state! []
   (reset! state initial-state))
 
-(defn append-message!
-  "Append {:role :user|:assistant|:system :text \"...\"} to the conversation."
+(defn append-activity!
+  "Append {:role :thinking|:tool|:system :text \"...\"} to the activity stream
+   (the right-hand column — what claude is doing, kept out of the conversation)."
   [role text]
-  (swap! state update :messages
-         (fn [msgs] (conj (vec msgs) {:role role :text text}))))
+  (swap! state update :activity
+         (fn [a] (conj (vec a) {:role role :text text}))))
+
+(defn append-message!
+  "Append to the conversation. :system messages are routed to the activity
+   stream so status/log noise doesn't flood the chat."
+  [role text]
+  (if (= role :system)
+    (append-activity! :system text)
+    (swap! state update :messages
+           (fn [msgs] (conj (vec msgs) {:role role :text text})))))
 
 (defn append-to-last-assistant!
   "Append text to the most recent :assistant message, or start a new one

@@ -1,4 +1,4 @@
-{:dev  {:db    {:path "dev.duckdb"}
+{:dev  {:db    {:path "cache/options_trader.duckdb"}
         :ibkr  {:host "127.0.0.1" :port 7497 :client-id 1}
         :log   {:level :debug}
         :data-sources

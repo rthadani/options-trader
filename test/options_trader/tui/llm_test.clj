@@ -5,11 +5,18 @@
 
 ;;; ── Model registry ────────────────────────────────────────────────────────
 
+;; One :each fixture — a second use-fixtures call would replace this one rather
+;; than compose. Restores the global model/provider atoms and isolates the
+;; conversation store per test.
 (use-fixtures :each
   (fn [f]
-    (let [prior (llm/current-model)]
+    (require 'options-trader.tui.conversation)
+    ((resolve 'options-trader.tui.conversation/reset-claude-sessions!))
+    (let [prior-model    (llm/current-model)
+          prior-provider (llm/current-provider)]
       (try (f)
-           (finally (llm/set-model! prior))))))
+           (finally (llm/set-model! prior-model)
+                    (llm/set-provider! prior-provider))))))
 
 (deftest current-model-has-a-default
   (is (string? (llm/current-model)))
@@ -52,13 +59,6 @@
     (is (not-any? #{"--resume"} cmd))))
 
 ;;; ── ask-in-scope: auto-resume + auto-capture ───────────────────────────────
-
-(defn- with-isolated-store [t]
-  (require 'options-trader.tui.conversation)
-  ((resolve 'options-trader.tui.conversation/reset-claude-sessions!))
-  (t))
-
-(use-fixtures :each with-isolated-store)
 
 (def ^:private sample-claude-stdout
   (str
@@ -191,3 +191,35 @@
 (deftest rate-limited-detects-quota-signal
   (is (true?  (llm/rate-limited? "Claude usage limit reached. Tokens will renew at 5pm.")))
   (is (false? (llm/rate-limited? "all good"))))
+
+;;; ── Provider dispatch (mirrors morpheus.executor.llm) ──────────────────────
+
+(deftest set-provider!-validates-and-updates
+  (is (= :kimi   (llm/set-provider! "kimi")))
+  (is (= :kimi   (llm/current-provider)))
+  (is (= :ollama (llm/set-provider! :ollama)))
+  (is (thrown? clojure.lang.ExceptionInfo (llm/set-provider! "bogus")))
+  (is (thrown? clojure.lang.ExceptionInfo (llm/set-provider! nil))))
+
+(deftest complete-ollama-shells-out-to-ollama-launch-claude
+  (let [captured (atom nil)
+        fake-sh  (fn [& args] (reset! captured args) {:exit 0 :out "ok"})]
+    (llm/complete {:provider :ollama :model "qwen2.5-coder" :sh-fn fake-sh} "ping")
+    (let [args @captured]
+      (is (= ["ollama" "launch" "claude"] (take 3 args)))
+      (is (some #{"qwen2.5-coder"} args))
+      (is (some #{"--print"} args)))))
+
+(deftest complete-explicit-provider-overrides-active
+  (llm/set-provider! :claude)
+  (let [captured (atom nil)
+        fake-sh  (fn [& args] (reset! captured args) {:exit 0 :out "ok"})]
+    (llm/complete {:provider :ollama :model "m" :sh-fn fake-sh} "x")
+    (is (= "ollama" (first @captured)))))
+
+(deftest complete-routes-by-active-provider
+  (llm/set-provider! :ollama)
+  (let [captured (atom nil)
+        fake-sh  (fn [& args] (reset! captured args) {:exit 0 :out "ok"})]
+    (llm/complete {:model "m" :sh-fn fake-sh} "x")
+    (is (= "ollama" (first @captured)))))

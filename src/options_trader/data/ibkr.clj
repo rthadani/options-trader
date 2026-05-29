@@ -40,6 +40,11 @@
 (defonce ^:private pending      (atom {}))      ;; rid → {:cb fn :mode kw :events []}
 (defonce ^:private default-subs (subs/create-manager))
 
+;; reqPositions is account-wide and carries no request-id, so its :position /
+;; :position-end events can't be routed by id like every other stream. Remember
+;; the id we registered the cb under and map those events back to it.
+(defonce ^:private positions-rid (atom nil))
+
 ;;; ── Parsers ─────────────────────────────────────────────────────────────────
 
 (defn ->contract
@@ -128,6 +133,36 @@
            (catch Throwable e
              (log/warnf e "batch cb threw for req-id %s" rid))))))
 
+(def ^:private epoch-expiry (java.time.LocalDate/parse "1900-01-01"))
+
+(defn- ib-expiry->local-date
+  "IB option expiry arrives as \"yyyyMMdd\"; stock positions carry none."
+  [s]
+  (when (and (string? s) (re-matches #"\d{8}" s))
+    (java.time.LocalDate/parse s java.time.format.DateTimeFormatter/BASIC_ISO_DATE)))
+
+(defn- project-position
+  "Normalise a reqPositions :position event (java Contract + Decimal) into the
+   row shape portfolio.core/upsert-positions! expects. reqPositions carries no
+   market value or unrealized P&L, so those stay nil."
+  [event]
+  (let [^com.ib.client.Contract c (:contract event)
+        opt? (= "OPT" (str (.secType c)))]
+    {:type           :position
+     :account        (:account event)
+     :conid          (.conid c)
+     :symbol         (.symbol c)
+     :opt-right      (case (str (.right c)) "Call" "C" "Put" "P" "")
+     :expiry         (if opt?
+                       (or (ib-expiry->local-date (.lastTradeDateOrContractMonth c))
+                           epoch-expiry)
+                       epoch-expiry)
+     :strike         (.strike c)
+     :qty            (.longValue ^com.ib.client.Decimal (:pos event))
+     :avg-cost       (:avg-cost event)
+     :market-value   nil
+     :unrealized-pnl nil}))
+
 (defn- project
   "Convert per-event java payloads (Bar, ContractDetails, …) to Clojure maps.
    For ContractDetails the nested Contract is also unwrapped so callers see
@@ -143,6 +178,9 @@
           m (cond-> m
               (:contract m) (update :contract ->cmap))]
       (assoc m :type :contract-details :req-id (:req-id event)))
+
+    :position
+    (project-position event)
 
     event))
 
@@ -196,7 +234,9 @@
    (try
     (let [t         (:type event)
           rid       (or (:req-id event) (:request-id event)
-                        (:id event) (:ticker-id event) (:order-id event))
+                        (:id event) (:ticker-id event) (:order-id event)
+                        (when (or (= t :position) (= t :position-end))
+                          @positions-rid))
           terminal? (contains? terminal-event-types t)
           entry     (when rid (get @pending rid))]
       (when (= t :managed-accounts) (capture-managed-accounts! event))
@@ -572,6 +612,17 @@
   (dispatch-batch! conn {:type :req-market-data :contract contract
                           :tick-types tick-types :snapshot true} cb))
 
+(defn start-snapshot!
+  "Fire a one-shot market-data snapshot and return an atom that accumulates the
+   raw tick events. Read it via `normalize-snapshot` after a collection window
+   — `:tick-snapshot-end` is unreliable, so callers time-box instead of waiting
+   for it. The IB snapshot auto-cancels, so this is not a persistent sub."
+  [conn contract]
+  (let [acc (atom [])]
+    (dispatch-stream! conn {:type :req-market-data :contract contract :snapshot true}
+                      (fn [ev] (when ev (swap! acc conj ev))))
+    acc))
+
 (defn req-option-chain [conn underlying expiry cb]
   (dispatch-batch! conn {:type :req-option-chain :underlying underlying :expiry expiry} cb))
 
@@ -583,7 +634,9 @@
                           :report-type report-type} cb))
 
 (defn req-positions [conn cb]
-  (dispatch-stream! conn {:type :req-positions} cb))
+  (let [id (dispatch-stream! conn {:type :req-positions} cb)]
+    (reset! positions-rid id)
+    id))
 
 (defn req-account-summary [conn tags cb]
   (dispatch-stream! conn {:type :req-account-summary :tags tags} cb))
