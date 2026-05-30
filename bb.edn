@@ -20,9 +20,8 @@
   {:doc "Launch the options-trader application"
    :task (clojure "-M:run")}
 
-  refresh-data
-  {:doc "Refresh market data (Phase 2 pending)"
-   :task (println "refresh-data: phase 2 pending")}
+  refresh-data {:doc "Refresh market data for a universe"
+             :task (shell "bash" "tasks/run-refresh-data.sh")}
 
   generate-fixtures
   {:doc "Generate test fixtures (Phase 3 pending)"

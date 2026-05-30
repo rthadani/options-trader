@@ -1,0 +1,7 @@
+---
+name: Needs Sortino
+description: Stocks with positive sortino
+universe: latest_indicators
+tags: []
+---
+

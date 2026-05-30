@@ -1,0 +1,7 @@
+---
+name: Oversold NL
+description: stocks with RSI under 30
+universe: latest_indicators
+tags: []
+---
+
