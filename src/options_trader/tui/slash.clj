@@ -116,6 +116,18 @@
     {:cmd "/model" :status :ok :command :show-model
      :provider (llm/current-provider) :model (llm/current-model)}))
 
+(defn- handle-agent
+  "/agent                    — show the active agent
+   /agent pi                 — switch to the pi agent
+   /agent claude             — switch to the claude agent"
+  [_ctx args]
+  (if-let [a (first args)]
+    (let [new-a (llm/set-agent! a)]
+      {:cmd "/agent" :status :ok :command :set-agent
+       :agent new-a :provider (llm/current-provider) :model (llm/current-model)})
+    {:cmd "/agent" :status :ok :command :show-agent
+     :agent (llm/current-agent) :provider (llm/current-provider) :model (llm/current-model)}))
+
 ;;; ── Dispatch table ──────────────────────────────────────────────────────────
 
 (def dispatch-table
@@ -136,6 +148,7 @@
    "/promote"             (stub-handler "/promote")
    "/demote"              (stub-handler "/demote")
    "/model"               handle-model
+   "/agent"               handle-agent
    "/quit"                (stub-handler "/quit")
    "/reset"               handle-reset
    "/sessions"            handle-sessions
@@ -147,7 +160,7 @@
     "/screens" "/universes" "/investigate" "/clear-investigation"
     "/note" "/findings" "/refresh" "/portfolio" "/watchlist"
     "/promote" "/demote" "/model" "/quit"
-    "/reset" "/sessions" "/compact"})
+    "/reset" "/sessions" "/compact" "/agent"})
 
 (defn dispatch
   "Parse input as a slash command and dispatch to the registered handler.

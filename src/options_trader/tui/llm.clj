@@ -16,14 +16,18 @@
 
 (def default-model "claude-opus-4-5")
 (def default-provider :claude)
+(def default-agent :claude)
 
 (def known-providers #{:claude :ollama :kimi :minimax})
+(def known-agents    #{:claude :pi})
 
 (defonce ^:private active-model    (atom default-model))
 (defonce ^:private active-provider (atom default-provider))
+(defonce ^:private active-agent    (atom default-agent))
 
 (defn current-model    [] @active-model)
 (defn current-provider [] @active-provider)
+(defn current-agent    [] @active-agent)
 
 (defn set-model! [m]
   (let [s (some-> m str str/trim)]
@@ -37,6 +41,13 @@
     (when-not (contains? known-providers k)
       (throw (ex-info "unknown provider" {:given p :known known-providers})))
     (reset! active-provider k)
+    k))
+
+(defn set-agent! [a]
+  (let [k (some-> a name str/trim str/lower-case keyword)]
+    (when-not (contains? known-agents k)
+      (throw (ex-info "unknown agent" {:given a :known known-agents})))
+    (reset! active-agent k)
     k))
 
 ;;; ── Anthropic-compatible env (non-Anthropic providers) ─────────────────────
@@ -164,6 +175,20 @@
       (throw-cli-error! "claude CLI error" res))
     (str/trim (:out res))))
 
+(defn- complete-pi
+  "One-shot pi CLI invocation (`pi -p`). Used by complete when :agent is :pi."
+  [{:keys [model system sh-fn] :or {sh-fn shell/sh}} prompt]
+  (let [m    (or model @active-model)
+        p    @active-provider
+        full (with-system system prompt)
+        args (cond-> ["pi" "-p"]
+               p (concat ["--provider" (name p)])
+               m (concat ["--model" m]))
+        res  (apply sh-fn (concat args [:in full]))]
+    (when (pos? (:exit res))
+      (throw-cli-error! "pi CLI error" res))
+    (str/trim (:out res))))
+
 (defn- complete-ollama [{:keys [model system sh-fn] :or {sh-fn shell/sh}} prompt]
   (let [m (or model @active-model)]
     (when (str/blank? (str m))
@@ -188,15 +213,18 @@
     (str/trim (:out res))))
 
 (defn complete
-  "Run claude --print, optionally routed to a non-Anthropic backend. Dispatches
-   on :provider — :ollama, :kimi, :minimax, or :claude (default). :model and
-   :provider fall back to the active selection; :sh-fn is injectable for tests."
-  [{:keys [provider] :as model-config} prompt]
-  (case (or provider @active-provider)
-    :ollama  (complete-ollama model-config prompt)
-    :kimi    (complete-via-endpoint :kimi    model-config prompt)
-    :minimax (complete-via-endpoint :minimax model-config prompt)
-    (complete-claude model-config prompt)))
+  "Run a one-shot LLM call. Dispatches on :agent first (:claude default or :pi),
+   then on :provider for the :claude agent (:ollama, :kimi, :minimax, or
+   default Anthropic). :model, :provider, and :agent fall back to active
+   selections; :sh-fn is injectable for tests."
+  [{:keys [provider agent] :as model-config} prompt]
+  (case (or agent @active-agent)
+    :pi (complete-pi model-config prompt)
+    (case (or provider @active-provider)
+      :ollama  (complete-ollama model-config prompt)
+      :kimi    (complete-via-endpoint :kimi    model-config prompt)
+      :minimax (complete-via-endpoint :minimax model-config prompt)
+      (complete-claude model-config prompt))))
 
 (defn- extract-json-object [text]
   (let [start (.indexOf ^String text "{")

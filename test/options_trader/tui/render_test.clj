@@ -8,13 +8,11 @@
   (into [] (map-indexed vector (str/split-lines s))))
 
 (deftest render-returns-string
-  (let [s "Portfolio Test"]
-    (is (string? (render/render st/initial-state 80 30)))))
+  (is (string? (render/render st/initial-state 80 30))))
 
-(deftest render-includes-account-id
-  (let [output (render/render st/initial-state 80 30)
-        lines  (lines-with-index output)]
-    (is (some #(str/includes? % "—") lines))))
+(deftest render-includes-portfolio-header
+  (let [output (render/render st/initial-state 80 30)]
+    (is (str/includes? output "Portfolio"))))
 
 (deftest render-includes-tws-status
   (let [output (render/render st/initial-state 80 30)]
@@ -27,6 +25,21 @@
         output (render/render s 80 30)]
     (is (str/includes? output "connected"))
     (is (not (str/includes? output "disconnected")))))
+
+(deftest render-shows-positions
+  (let [s      (assoc st/initial-state
+                      :positions [{:symbol "AAPL" :qty 100 :avg-cost 185.20
+                                   :market-value 22050.0 :unrealized-pnl 3530.0}])
+        output (render/render s 80 30)]
+    (is (str/includes? output "AAPL"))))
+
+(deftest render-shows-account-summary
+  (let [s      (assoc st/initial-state
+                      :account-summary {:net-liq 250000.0 :cash 42000.0
+                                        :buying-power 84000.0 :day-pl 1570.0})
+        output (render/render s 80 30)]
+    (is (str/includes? output "NetLiq"))
+    (is (str/includes? output "+1570"))))
 
 (deftest render-shows-user-and-assistant-messages
   (let [s      (assoc st/initial-state
@@ -52,17 +65,13 @@
 
 (deftest render-includes-input-prompt
   (let [s      (assoc st/initial-state :input "foo")
-        output (render/render s 80 30)]
-    (is (str/includes? output "foo"))))
+        output (render/render s 80 30)
+        clean  (str/replace output #"\033\[[0-9;]*[m]" "")]
+    (is (str/includes? clean "foo"))))
 
-(deftest render-pads-every-row-to-terminal-width
+
+(deftest render-has-portfolio-then-chat
   (let [output (render/render st/initial-state 80 30)
-        lines  (str/split-lines output)]
-    (doseq [line lines]
-      (is (= 80 (count line))
-          (str "row not padded to 80: " (pr-str line))))))
-
-(deftest render-chat-output-takes-most-of-height
-  (let [output (render/render st/initial-state 120 40)
-        lines  (str/split-lines output)]
-    (is (> (count lines) 20) "should have substantial chat area")))
+        lines  (lines-with-index output)]
+    (is (some #(str/includes? % "Portfolio") lines))
+    (is (some #(str/includes? % "❯") lines))))

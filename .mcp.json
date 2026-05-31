@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "options-trader": {
+      "command": "clojure",
+      "args": ["-M:mcp-server"],
+      "cwd": ".",
+      "lifecycle": "lazy",
+      "idleTimeout": 5,
+      "directTools": true
+    }
+  }
+}
