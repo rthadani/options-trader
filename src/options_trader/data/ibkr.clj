@@ -396,6 +396,50 @@
     (number? v)  (double v)
     :else (try (Double/parseDouble (str v)) (catch Throwable _ nil))))
 
+(def ^:private market-data-type-codes
+  {1 :live 2 :frozen 3 :delayed 4 :delayed-frozen})
+
+(defn- ->greek-kw [prefix suffix-kw]
+  (keyword (str (name prefix) "-" (name suffix-kw))))
+
+(defn- handle-tick-price [acc {:keys [field price]}]
+  (when-let [k (get tick-field->key field)]
+    (when (and (number? price) (not= -1.0 price))
+      (swap! acc assoc k price))))
+
+(defn- handle-tick-size [acc {:keys [field size]}]
+  (when-let [k (get tick-field->key field)]
+    (swap! acc assoc k (->double size))))
+
+(defn- handle-tick-opt-comp [acc {:keys [field implied-vol delta gamma theta vega
+                                          opt-price und-price pv-dividend]}]
+  (when-let [pfx (get opt-comp-prefix field)]
+    (swap! acc assoc
+           (->greek-kw pfx :iv)    implied-vol
+           (->greek-kw pfx :delta) delta
+           (->greek-kw pfx :gamma) gamma
+           (->greek-kw pfx :theta) theta
+           (->greek-kw pfx :vega)  vega
+           (->greek-kw pfx :opt-price) opt-price)
+    (swap! acc (fn [m]
+                 (cond-> m
+                   und-price   (assoc :underlying-price und-price)
+                   pv-dividend (assoc :pv-dividend      pv-dividend))))))
+
+(defn- handle-market-data-type [acc {:keys [market-data-type]}]
+  (swap! acc assoc :data-mode
+         (get market-data-type-codes market-data-type :unknown)))
+
+(defn- handle-warning [acc {:keys [code message]}]
+  (swap! acc update :warnings conj {:code code :message message}))
+
+(def ^:private snapshot-event-handlers
+  {:tick-price              handle-tick-price
+   :tick-size               handle-tick-size
+   :tick-option-computation handle-tick-opt-comp
+   :market-data-type        handle-market-data-type
+   :warning                 handle-warning})
+
 (defn normalize-snapshot
   "Fold a vector of tick events from req-market-data-snapshot into a flat
    quote map. Live and delayed tick codes both collapse into the same keys
@@ -405,42 +449,8 @@
   [events]
   (let [acc (atom {:warnings []})]
     (doseq [e events]
-      (case (:type e)
-        :tick-price
-        (when-let [k (get tick-field->key (:field e))]
-          (let [v (:price e)]
-            (when (and (number? v) (not= -1.0 v))
-              (swap! acc assoc k v))))
-
-        :tick-size
-        (when-let [k (get tick-field->key (:field e))]
-          (swap! acc assoc k (->double (:size e))))
-
-        :tick-option-computation
-        (when-let [pfx (get opt-comp-prefix (:field e))]
-          (let [p (name pfx)]
-            (swap! acc assoc
-                   (keyword (str p "-iv"))        (:implied-vol e)
-                   (keyword (str p "-delta"))     (:delta e)
-                   (keyword (str p "-gamma"))     (:gamma e)
-                   (keyword (str p "-theta"))     (:theta e)
-                   (keyword (str p "-vega"))      (:vega e)
-                   (keyword (str p "-opt-price")) (:opt-price e)))
-          (swap! acc (fn [m]
-                       (cond-> m
-                         (:und-price e)   (assoc :underlying-price (:und-price e))
-                         (:pv-dividend e) (assoc :pv-dividend      (:pv-dividend e))))))
-
-        :market-data-type
-        (swap! acc assoc :data-mode
-               (case (:market-data-type e)
-                 1 :live 2 :frozen 3 :delayed 4 :delayed-frozen :unknown))
-
-        :warning
-        (swap! acc update :warnings conj
-               {:code (:code e) :message (:message e)})
-
-        nil))
+      (when-let [handler (get snapshot-event-handlers (:type e))]
+        (handler acc e)))
     (let [m @acc]
       (cond-> m
         (:model-iv m)    (assoc :iv    (:model-iv m))
@@ -486,74 +496,75 @@
 
 ;;; ── Request translation ────────────────────────────────────────────────────
 
+(defn- send-historical-bars [ecs {:keys [req-id contract bar-size duration what-to-show]}]
+  (let [[bs bsu] (parse-bar-size bar-size)
+        [dur du] (parse-duration duration)]
+    ((cs-fn 'request-historical-data) ecs req-id (->contract contract) ""
+     dur du bs bsu (or what-to-show :trades) true 1 false)))
+
+(defn- send-historical-iv [ecs {:keys [req-id contract bar-size duration]}]
+  (let [[bs bsu] (parse-bar-size (or bar-size "1 day"))
+        [dur du] (parse-duration  (or duration  "30 D"))]
+    ((cs-fn 'request-historical-data) ecs req-id (->contract contract) ""
+     dur du bs bsu :option-implied-volatility true 1 false)))
+
+(defn- send-market-data [ecs {:keys [req-id contract tick-types snapshot]}]
+  ((cs-fn 'request-market-data) ecs req-id (->contract contract)
+   (or tick-types "") (boolean snapshot) false))
+
+(defn- send-contract-details [ecs {:keys [req-id contract]}]
+  ((cs-fn 'request-contract-details) ecs req-id (->contract contract)))
+
+(defn- send-fundamentals [ecs {:keys [req-id contract report-type]}]
+  ((cs-fn 'request-fundamental-data) ecs req-id (->contract contract)
+   (or report-type "ReportSnapshot")))
+
+(defn- send-account-summary [ecs {:keys [req-id tags]}]
+  ((cs-fn 'request-account-summary) ecs req-id "All" (or tags "")))
+
+(defn- send-news-article [ecs {:keys [req-id provider-code article-id]}]
+  ((cs-fn 'request-news-article) ecs req-id provider-code article-id))
+
+(defn- send-historical-news [ecs {:keys [req-id conid provider-codes
+                                         start-date-time end-date-time
+                                         total-results]}]
+  ((cs-fn 'request-historical-news) ecs req-id conid
+   (or provider-codes "BRFG+DJNL") (or start-date-time "")
+   (or end-date-time "") (or total-results 10)))
+
+(defn- send-scanner-subscription [ecs {:keys [req-id params]}]
+  ((cs-fn 'request-scanner-subscription) ecs req-id params nil nil))
+
+(defn- send-option-chain [ecs {:keys [req-id underlying]}]
+  (let [sym  (:symbol underlying)
+        sec  (or (some-> (:sec-type underlying) name) "STK")
+        cnid (or (:conid underlying) 0)]
+    ((cs-fn 'request-sec-def-option-parameters) ecs req-id sym "" sec cnid)))
+
+(def ^:private request-senders
+  {:req-historical-bars     send-historical-bars
+   :req-historical-iv       send-historical-iv
+   :req-market-data         send-market-data
+   :req-contract-details    send-contract-details
+   :req-fundamentals        send-fundamentals
+   :req-positions           (fn [ecs _] ((cs-fn 'request-positions) ecs))
+   :req-account-summary     send-account-summary
+   :req-news-providers      (fn [ecs _] ((cs-fn 'request-news-providers) ecs))
+   :req-news-article        send-news-article
+   :req-historical-news     send-historical-news
+   :req-scanner-subscription send-scanner-subscription
+   :req-option-chain        send-option-chain})
+
 (defn send-request!
   "Translate req to a TWS API call. conn must contain :ecs; req must carry
    :type and :req-id. Tests stub via with-redefs on this var."
   [conn req]
-  (let [ecs (:ecs conn)]
-    (case (:type req)
-      :req-historical-bars
-      (let [{:keys [req-id contract bar-size duration what-to-show]} req
-            [bs bsu] (parse-bar-size bar-size)
-            [dur du] (parse-duration duration)]
-        ((cs-fn 'request-historical-data) ecs req-id (->contract contract) ""
-         dur du bs bsu (or what-to-show :trades) true 1 false))
-
-      :req-historical-iv
-      (let [{:keys [req-id contract bar-size duration]} req
-            [bs bsu] (parse-bar-size (or bar-size "1 day"))
-            [dur du] (parse-duration  (or duration  "30 D"))]
-        ((cs-fn 'request-historical-data) ecs req-id (->contract contract) ""
-         dur du bs bsu :option-implied-volatility true 1 false))
-
-      :req-market-data
-      (let [{:keys [req-id contract tick-types snapshot]} req]
-        ((cs-fn 'request-market-data) ecs req-id (->contract contract)
-         (or tick-types "") (boolean snapshot) false))
-
-      :req-contract-details
-      (let [{:keys [req-id contract]} req]
-        ((cs-fn 'request-contract-details) ecs req-id (->contract contract)))
-
-      :req-fundamentals
-      (let [{:keys [req-id contract report-type]} req]
-        ((cs-fn 'request-fundamental-data) ecs req-id (->contract contract)
-         (or report-type "ReportSnapshot")))
-
-      :req-positions
-      ((cs-fn 'request-positions) ecs)
-
-      :req-account-summary
-      (let [{:keys [req-id tags]} req]
-        ((cs-fn 'request-account-summary) ecs req-id "All" (or tags "")))
-
-      :req-news-providers
-      ((cs-fn 'request-news-providers) ecs)
-
-      :req-news-article
-      (let [{:keys [req-id provider-code article-id]} req]
-        ((cs-fn 'request-news-article) ecs req-id provider-code article-id))
-
-      :req-historical-news
-      (let [{:keys [req-id conid provider-codes start-date-time end-date-time
-                    total-results]} req]
-        ((cs-fn 'request-historical-news) ecs req-id conid
-         (or provider-codes "BRFG+DJNL") (or start-date-time "")
-         (or end-date-time "") (or total-results 10)))
-
-      :req-scanner-subscription
-      (let [{:keys [req-id params]} req]
-        ((cs-fn 'request-scanner-subscription) ecs req-id params nil nil))
-
-      :req-option-chain
-      (let [{:keys [req-id underlying]} req
-            sym  (:symbol underlying)
-            sec  (or (some-> (:sec-type underlying) name) "STK")
-            cnid (or (:conid underlying) 0)]
-        ((cs-fn 'request-sec-def-option-parameters) ecs req-id sym "" sec cnid))
-
-      (throw (ex-info (str "unsupported req :type " (:type req)) {:req req}))))
-  nil)
+  (let [ecs (:ecs conn)
+        sender (get request-senders (:type req))]
+    (if sender
+      (sender ecs req)
+      (throw (ex-info (str "unsupported req :type " (:type req)) {:req req})))
+    nil))
 
 (defn cancel-sub!
   "Best-effort cancel by req-id. Walks likely cancel fns and clears the pending entry."

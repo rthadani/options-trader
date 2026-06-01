@@ -4,13 +4,14 @@
             [clojure.string :as str]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
+            [options-trader.indicators.engine :as engine]
             [options-trader.tui.llm :as llm]))
 
 (defn- indicator-meanings
   "Map of column-keyword → human-readable indicator meaning, derived from
-   resources/indicators.edn. Keys are kebab-style column names matching DuckDB."
+   the active indicators.edn. Keys are kebab-style column names matching DuckDB."
   []
-  (let [cfg (edn/read-string (slurp (io/resource "indicators.edn")))]
+  (let [cfg (engine/load-config)]
     (into {}
           (for [spec (concat (:indicators cfg) (:composites cfg))
                 :let [col (some-> spec :column name)

@@ -7,10 +7,16 @@
      :kimi              — api.moonshot.ai/anthropic   (reads MOONSHOT_API_KEY)
      :minimax           — api.minimax.chat/anthropic  (reads MINIMAX_API_KEY)
    complete/complete-json dispatch on :provider; the streaming spawn (ask /
-   ask-in-scope) routes the same way via the spawned process's env."
+   ask-in-scope) routes the same way via the spawned process's env.
+
+   For all providers that shell out to `claude`, we inject CLAUDE_CONFIG_DIR
+   pointing at <paths/runtime-claude-dir> so the agent's settings, agents,
+   skills, slash-commands and session history are fully isolated from the
+   host machine's ~/.claude."
   (:require [cheshire.core                   :as json]
             [clojure.java.shell              :as shell]
             [clojure.string                  :as str]
+            [options-trader.paths            :as paths]
             [options-trader.tui.claude-proc  :as cp]
             [options-trader.tui.conversation :as conv]))
 
@@ -62,6 +68,20 @@
       (throw (ex-info (str key-env " env var not set") {:provider provider})))
     k))
 
+(defn- claude-config-env
+  "Single override that points the claude CLI at our isolated config dir,
+   instead of the user's ~/.claude. Used by every provider that shells out
+   to `claude`. Suitable for ProcessBuilder where env is MERGED into parent."
+  []
+  {"CLAUDE_CONFIG_DIR" (paths/runtime-claude-dir)})
+
+(defn- claude-sh-env
+  "Full parent-env map + CLAUDE_CONFIG_DIR override. Suitable for
+   clojure.java.shell/sh, whose :env REPLACES (not merges) the env."
+  []
+  (-> (into {} (System/getenv))
+      (assoc "CLAUDE_CONFIG_DIR" (paths/runtime-claude-dir))))
+
 (defn- anthropic-compat-env
   "Parent env plus the overrides that repoint the claude CLI at an
    Anthropic-compatible endpoint for `provider` running `model`."
@@ -77,6 +97,7 @@
                "ANTHROPIC_DEFAULT_SONNET_MODEL" model
                "ANTHROPIC_DEFAULT_HAIKU_MODEL"  model
                "CLAUDE_CODE_SUBAGENT_MODEL"     model
+               "CLAUDE_CONFIG_DIR"              (paths/runtime-claude-dir)
                "ENABLE_TOOL_SEARCH"             "false"))))
 
 ;;; ── Streaming spawn (the in-session agent) ─────────────────────────────────
@@ -91,10 +112,10 @@
         p (or provider @active-provider)]
     (case p
       :ollama  {:cmd (into ["ollama" "launch" "claude" "--model" m "--yes" "--"] claude-args)
-                :env {}}
+                :env (claude-config-env)}
       :kimi    {:cmd (into ["claude" "--model" m] claude-args) :env (anthropic-compat-env :kimi m)}
       :minimax {:cmd (into ["claude" "--model" m] claude-args) :env (anthropic-compat-env :minimax m)}
-      {:cmd (into ["claude" "--model" m] claude-args) :env {}})))
+      {:cmd (into ["claude" "--model" m] claude-args) :env (claude-config-env)})))
 
 (defn spawn-claude
   [{:keys [model provider system-prompt cwd session-id]
@@ -106,7 +127,7 @@
                       :cwd           cwd
                       :env           (if (contains? provider-endpoints p)
                                        (anthropic-compat-env p m)
-                                       {})
+                                       (claude-config-env))
                       :session-id    session-id})))
 
 (defn ask
@@ -170,7 +191,7 @@
         full (with-system system prompt)
         args (cond-> ["claude" "--print" "--dangerously-skip-permissions"]
                m (concat ["--model" m]))
-        res  (apply sh-fn (concat args [:in full]))]
+        res  (apply sh-fn (concat args [:in full :env (claude-sh-env)]))]
     (when (pos? (:exit res))
       (throw-cli-error! "claude CLI error" res))
     (str/trim (:out res))))
@@ -196,7 +217,7 @@
     (let [full (with-system system prompt)
           args ["ollama" "launch" "claude" "--model" (str m) "--yes"
                 "--" "--print" "--dangerously-skip-permissions"]
-          res  (apply sh-fn (concat args [:in full]))]
+          res  (apply sh-fn (concat args [:in full :env (claude-sh-env)]))]
       (when (pos? (:exit res))
         (throw-cli-error! "ollama launch claude error" res))
       (str/trim (:out res)))))

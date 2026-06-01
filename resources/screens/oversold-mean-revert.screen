@@ -1,7 +1,0 @@
----
-name: Oversold Mean Revert
-description: RSI and Stochastic both oversold, candidates for mean-reversion longs
-universe: latest_indicators
-tags: [oversold, mean-reversion, rsi, stochastic]
----
-SELECT symbol FROM latest_indicators WHERE rsi_14 < 35 AND stoch_k < 25 ORDER BY rsi_14 ASC LIMIT 20

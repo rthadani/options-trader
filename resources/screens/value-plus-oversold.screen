@@ -1,7 +1,0 @@
----
-name: Value Plus Oversold
-description: Deeply oversold by multiple oscillators, likely overshooting fair value
-universe: latest_indicators
-tags: [value, oversold, williams-r, stochastic]
----
-SELECT symbol FROM latest_indicators WHERE williams_r_14 < -70 AND stoch_k < 30 AND rsi_14 < 40 ORDER BY williams_r_14 ASC LIMIT 20

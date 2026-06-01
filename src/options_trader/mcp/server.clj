@@ -1,5 +1,8 @@
 (ns options-trader.mcp.server
-  (:require [options-trader.mcp.protocol :as protocol]
+  (:require [options-trader.config       :as config]
+            [options-trader.data.edgar   :as edgar]
+            [options-trader.db.duckdb    :as duckdb]
+            [options-trader.mcp.protocol :as protocol]
             [options-trader.mcp.tools    :as tools])
   (:gen-class))
 
@@ -50,8 +53,27 @@
         handler  (partial handle-request registry ctx)]
     (protocol/stdio-loop rdr wtr handler)))
 
+(defn- apply-edgar-source! [cfg]
+  (when-let [edgar-cfg (get-in cfg [:data-sources :edgar])]
+    (edgar/set-default-source! (edgar/make-source edgar-cfg))))
+
 (defn -main [& _args]
-  (let [rdr (java.io.BufferedReader. (java.io.InputStreamReader. System/in))
-        wtr (java.io.PrintWriter. System/out true)
-        ctx {}]
-    (run-stdio-server rdr wtr ctx)))
+  (let [profile (or (System/getenv "OPTIONS_TRADER_PROFILE") "dev")
+        cfg     (try (config/load-config profile)
+                     (catch Throwable t
+                       (binding [*out* *err*]
+                         (println "warning: failed to load config —" (.getMessage t)))
+                       nil))]
+    (when cfg
+      (apply-edgar-source! cfg))
+    (let [rdr (java.io.BufferedReader. (java.io.InputStreamReader. System/in))
+          wtr (java.io.PrintWriter. System/out true)
+          ds  (when cfg
+                (try (duckdb/datasource cfg)
+                     (catch Throwable t
+                       (binding [*out* *err*]
+                         (println "warning: failed to open DB —" (.getMessage t)))
+                       nil)))
+          ctx (cond-> {}
+                ds (assoc :ds ds))]
+      (run-stdio-server rdr wtr ctx))))

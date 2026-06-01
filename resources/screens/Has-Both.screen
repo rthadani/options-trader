@@ -1,7 +1,0 @@
----
-name: Has Both
-description: would-be-llm fallback
-universe: latest_indicators
-tags: []
----
-SELECT symbol FROM latest_indicators WHERE rsi_14 < 35

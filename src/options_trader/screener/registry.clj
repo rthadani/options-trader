@@ -5,6 +5,7 @@
             [hawk.core :as hawk]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [options-trader.paths :as paths]
             [options-trader.screener.nl :as nl])
   (:import [java.util UUID]
            [java.security MessageDigest]))
@@ -59,9 +60,11 @@
        (or dsl "") "\n"))
 
 (defn- screen-dir
-  "Return the screens directory (creating it if absent)."
+  "Return the user-writable screens directory (creating it if absent).
+   Lives under paths/screens-dir so screens can be edited outside the
+   source tree. Seeded from resources/screens/ on init."
   ^java.io.File []
-  (let [d (io/file "resources/screens")]
+  (let [d (io/file (paths/screens-dir))]
     (.mkdirs d)
     d))
 

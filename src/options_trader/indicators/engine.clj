@@ -16,8 +16,18 @@
             [options-trader.indicators.price-action-views :as price-action-views]
             [options-trader.indicators.runner :as runner]
             [options-trader.indicators.sector-metrics :as sector-metrics]
-            [options-trader.indicators.ta4j :as ta4j])
+            [options-trader.indicators.ta4j :as ta4j]
+            [options-trader.paths :as paths])
   (:import [java.time ZoneOffset]))
+
+(defn load-config
+  "Read indicators config as EDN. Prefers the user-writable file at
+   paths/indicators-file; falls back to the packaged classpath resource
+   when the user file is absent (tests, fresh checkouts before init)."
+  []
+  (let [user (io/file (paths/indicators-file))]
+    (edn/read-string
+      (slurp (if (.exists user) user (io/resource "indicators.edn"))))))
 
 ;;; ── Bar loading ─────────────────────────────────────────────────────────────
 
@@ -48,55 +58,62 @@
 
 ;;; ── Indicator construction ──────────────────────────────────────────────────
 
+(def ^:private indicator-builders
+  "Map of indicator :kind keyword to a fn taking [series params] and returning
+   the ta4j indicator object. Eliminates the large case dispatch."
+  {:RSI                   #(ta4j/rsi                 %1 (first %2))
+   :SMA                   #(ta4j/sma                 %1 (first %2))
+   :EMA                   #(ta4j/ema                 %1 (first %2))
+   :ATR                   #(ta4j/atr                 %1 (first %2))
+   :BollingerBandWidth    #(ta4j/bollinger-band-width %1 (first %2) (second %2))
+   :ADX                   #(ta4j/adx                 %1 (first %2))
+   :DX                    #(ta4j/dx                  %1 (first %2))
+   :PlusDI                #(ta4j/plus-di             %1 (first %2))
+   :MinusDI               #(ta4j/minus-di            %1 (first %2))
+   :AroonUp               #(ta4j/aroon-up            %1 (first %2))
+   :AroonDown             #(ta4j/aroon-down          %1 (first %2))
+   :AroonOsc              #(ta4j/aroon-osc           %1 (first %2))
+   :Chop                  #(ta4j/chop                %1 (first %2))
+   :StochasticOscillatorK #(ta4j/stoch-k             %1 (first %2))
+   :StochasticOscillatorD #(ta4j/stoch-d             %1 (first %2))
+   :StochasticRSI         #(ta4j/stoch-rsi           %1 (first %2))
+   :WilliamsR             #(ta4j/williams-r          %1 (first %2))
+   :CCI                   #(ta4j/cci                 %1 (first %2))
+   :CMO                   #(ta4j/cmo                 %1 (first %2))
+   :MACD                  #(ta4j/macd                %1 (first %2) (second %2))
+   :MACDSignal            #(ta4j/macd-signal         %1 (first %2) (second %2) (nth %2 2))
+   :MACDHist              #(ta4j/macd-hist           %1 (first %2) (second %2) (nth %2 2))
+   :STDDEV                #(ta4j/stddev              %1 (first %2))
+   :ParabolicSAR          #(ta4j/parabolic-sar       %1 (first %2) (second %2) (nth %2 2))
+   :OBV                   (fn [s _] (ta4j/obv s))
+   :UlcerIndex            #(ta4j/ulcer-index         %1 (first %2))
+   :MassIndex             #(ta4j/mass-index          %1 (first %2) (second %2))
+   :CMF                   #(ta4j/cmf                 %1 (first %2))
+   :BBUpper               #(ta4j/bollinger-upper     %1 (first %2) (second %2))
+   :BBLower               #(ta4j/bollinger-lower     %1 (first %2) (second %2))
+   :PercentB              #(ta4j/percent-b           %1 (first %2) (second %2))
+   :KCUpper               #(ta4j/keltner-upper       %1 (first %2) (second %2) (nth %2 2))
+   :KCLower               #(ta4j/keltner-lower       %1 (first %2) (second %2) (nth %2 2))
+   :Fisher                #(ta4j/fisher              %1 (first %2))
+   :PivotPoint            (fn [s _] (ta4j/pivot-point s))
+   :PivotR1               (fn [s _] (ta4j/pivot-reversal s :R1))
+   :PivotR2               (fn [s _] (ta4j/pivot-reversal s :R2))
+   :PivotS1               (fn [s _] (ta4j/pivot-reversal s :S1))
+   :PivotS2               (fn [s _] (ta4j/pivot-reversal s :S2))
+   :FibR38                (fn [s _] (ta4j/pivot-fib-reversal s 0.382 :resistance))
+   :FibR62                (fn [s _] (ta4j/pivot-fib-reversal s 0.618 :resistance))
+   :FibS38                (fn [s _] (ta4j/pivot-fib-reversal s 0.382 :support))
+   :FibS62                (fn [s _] (ta4j/pivot-fib-reversal s 0.618 :support))})
+
 (defn- build-indicator
   "Build a ta4j indicator object for spec. Returns the indicator (not its value)."
   [series spec]
-  (let [{:keys [kind params]} spec]
-    (case kind
-      :RSI                   (ta4j/rsi         series (first params))
-      :SMA                   (ta4j/sma         series (first params))
-      :EMA                   (ta4j/ema         series (first params))
-      :ATR                   (ta4j/atr         series (first params))
-      :BollingerBandWidth    (ta4j/bollinger-band-width
-                               series (first params) (second params))
-      :ADX                   (ta4j/adx         series (first params))
-      :DX                    (ta4j/dx          series (first params))
-      :PlusDI                (ta4j/plus-di     series (first params))
-      :MinusDI               (ta4j/minus-di    series (first params))
-      :AroonUp               (ta4j/aroon-up    series (first params))
-      :AroonDown             (ta4j/aroon-down  series (first params))
-      :AroonOsc              (ta4j/aroon-osc   series (first params))
-      :Chop                  (ta4j/chop        series (first params))
-      :StochasticOscillatorK (ta4j/stoch-k     series (first params))
-      :StochasticOscillatorD (ta4j/stoch-d     series (first params))
-      :StochasticRSI         (ta4j/stoch-rsi   series (first params))
-      :WilliamsR             (ta4j/williams-r  series (first params))
-      :CCI                   (ta4j/cci         series (first params))
-      :CMO                   (ta4j/cmo         series (first params))
-      :MACD                  (ta4j/macd        series (first params) (second params))
-      :MACDSignal            (ta4j/macd-signal series (first params) (second params) (nth params 2))
-      :MACDHist              (ta4j/macd-hist   series (first params) (second params) (nth params 2))
-      :STDDEV                (ta4j/stddev      series (first params))
-      :ParabolicSAR          (ta4j/parabolic-sar series (first params) (second params) (nth params 2))
-      :OBV                   (ta4j/obv         series)
-      :UlcerIndex            (ta4j/ulcer-index series (first params))
-      :MassIndex             (ta4j/mass-index  series (first params) (second params))
-      :CMF                   (ta4j/cmf         series (first params))
-      :BBUpper               (ta4j/bollinger-upper series (first params) (second params))
-      :BBLower               (ta4j/bollinger-lower series (first params) (second params))
-      :PercentB              (ta4j/percent-b   series (first params) (second params))
-      :KCUpper               (ta4j/keltner-upper series (first params) (second params) (nth params 2))
-      :KCLower               (ta4j/keltner-lower series (first params) (second params) (nth params 2))
-      :Fisher                (ta4j/fisher      series (first params))
-      :PivotPoint            (ta4j/pivot-point series)
-      :PivotR1               (ta4j/pivot-reversal series :R1)
-      :PivotR2               (ta4j/pivot-reversal series :R2)
-      :PivotS1               (ta4j/pivot-reversal series :S1)
-      :PivotS2               (ta4j/pivot-reversal series :S2)
-      :FibR38                (ta4j/pivot-fib-reversal series 0.382 :resistance)
-      :FibR62                (ta4j/pivot-fib-reversal series 0.618 :resistance)
-      :FibS38                (ta4j/pivot-fib-reversal series 0.382 :support)
-      :FibS62                (ta4j/pivot-fib-reversal series 0.618 :support))))
+  (let [{:keys [kind params]} spec
+        builder (get indicator-builders kind)]
+    (if builder
+      (builder series params)
+      (throw (ex-info (str "Unknown indicator kind: " (name kind))
+                      {:kind kind})))))
 
 ;;; ── Indicator dispatch ──────────────────────────────────────────────────────
 
@@ -108,6 +125,93 @@
 
 ;;; ── Composite computation ───────────────────────────────────────────────────
 
+;;; ── Cross-direction detection ────────────────────────────────────────────────
+
+(defn- cross-direction
+  "Given prev value and curr value, return :bullish if crossing above zero,
+   :bearish if crossing below zero, or :none."
+  [prev curr]
+  (cond
+    (and (neg? prev) (>= curr 0.0)) "bullish"
+    (and (pos? prev) (<= curr 0.0)) "bearish"
+    :else "none"))
+
+(defn- sma-of-values [vals n-days]
+  (/ (apply + vals) n-days))
+
+;;; ── Composite computations ──────────────────────────────────────────────────
+
+(defn- compute-ttm-squeeze [values]
+  (let [{:keys [bb_upper bb_lower kc_upper kc_lower]} values]
+    (boolean (and (some? bb_upper) (some? kc_upper)
+                  (< bb_upper kc_upper)
+                  (> bb_lower kc_lower)))))
+
+(defn- compute-macd-cross [ind-objs series]
+  (let [n (ta4j/bar-count series)]
+    (if (< n 2)
+      "none"
+      (let [macd-ind  (get ind-objs :macd)
+            sig-ind   (get ind-objs :macd_signal)
+            last-i    (dec n)
+            prev-i    (- n 2)
+            curr-diff (- (ta4j/indicator-value macd-ind last-i)
+                         (ta4j/indicator-value sig-ind  last-i))
+            prev-diff (- (ta4j/indicator-value macd-ind prev-i)
+                         (ta4j/indicator-value sig-ind  prev-i))]
+        (cross-direction prev-diff curr-diff)))))
+
+(defn- compute-mass-reversal [ind-objs series]
+  (let [mass-ind  (get ind-objs :mass_index)
+        n         (ta4j/bar-count series)
+        lookback  (min 15 n)
+        vals      (mapv #(ta4j/indicator-value mass-ind %)
+                        (range (- n lookback) n))
+        latest    (last vals)
+        had-bulge (some #(> % 27.0) (butlast vals))]
+    (boolean (and had-bulge (some? latest) (< latest 26.5)))))
+
+(defn- compute-psar-flip [ind-objs series bars]
+  (let [n (ta4j/bar-count series)]
+    (if (< n 2)
+      "none"
+      (let [psar-ind   (get ind-objs :psar)
+            last-i     (dec n)
+            prev-i     (- n 2)
+            close-curr (:close (nth bars last-i))
+            close-prev (:close (nth bars prev-i))
+            psar-curr  (ta4j/indicator-value psar-ind last-i)
+            psar-prev  (ta4j/indicator-value psar-ind prev-i)]
+        (cross-direction (- close-prev psar-prev)
+                         (- close-curr psar-curr))))))
+
+(defn- compute-obv-trend [ind-objs series]
+  (let [obv-ind (get ind-objs :obv)
+        n       (ta4j/bar-count series)
+        n50     (max 1 (min 50 n))
+        n20     (max 1 (min 20 n))
+        start50 (- n n50)
+        vals50  (mapv #(ta4j/indicator-value obv-ind %) (range start50 n))
+        vals20  (take-last n20 vals50)
+        sma50   (sma-of-values vals50 n50)
+        sma20   (sma-of-values vals20 n20)]
+    (cond
+      (> sma20 sma50) "rising"
+      (< sma20 sma50) "falling"
+      :else "flat")))
+
+(def ^:private composite-computers
+  {:ttm-squeeze   (fn [& {:keys [values]}]
+                    (compute-ttm-squeeze values))
+   :macd-cross    (fn [& {:keys [ind-objs series]}]
+                    (compute-macd-cross ind-objs series))
+   :mass-reversal (fn [& {:keys [ind-objs series]}]
+                    (compute-mass-reversal ind-objs series))
+   :psar-flip     (fn [& {:keys [ind-objs series bars]}]
+                    (compute-psar-flip ind-objs series bars))
+   :obv-trend     (fn [& {:keys [ind-objs series]}]
+                    (compute-obv-trend ind-objs series))})
+
 (defn compute-composite
   "Compute a composite flag value from already-built base indicator objects.
    values   – {:col-kw -> double} last value of each base indicator
@@ -116,73 +220,10 @@
    bars     – seq of bar maps with :close (from load-bars)
    Returns Boolean for *_flag composites, String for string-valued composites."
   [spec values ind-objs series bars]
-  (case (:kind spec)
-
-    :ttm-squeeze
-    (let [{:keys [bb_upper bb_lower kc_upper kc_lower]} values]
-      (boolean (and (some? bb_upper) (some? kc_upper)
-                    (< bb_upper kc_upper)
-                    (> bb_lower kc_lower))))
-
-    :macd-cross
-    (let [n (ta4j/bar-count series)]
-      (if (< n 2)
-        "none"
-        (let [macd-ind  (get ind-objs :macd)
-              sig-ind   (get ind-objs :macd_signal)
-              last-i    (dec n)
-              prev-i    (- n 2)
-              curr-diff (- (ta4j/indicator-value macd-ind last-i)
-                           (ta4j/indicator-value sig-ind  last-i))
-              prev-diff (- (ta4j/indicator-value macd-ind prev-i)
-                           (ta4j/indicator-value sig-ind  prev-i))]
-          (cond
-            (and (neg? prev-diff) (>= curr-diff 0.0)) "bullish"
-            (and (pos? prev-diff) (<= curr-diff 0.0)) "bearish"
-            :else "none"))))
-
-    :mass-reversal
-    (let [mass-ind (get ind-objs :mass_index)
-          n        (ta4j/bar-count series)
-          lookback (min 15 n)
-          vals     (mapv #(ta4j/indicator-value mass-ind %)
-                         (range (- n lookback) n))
-          latest   (last vals)
-          had-bulge (some #(> % 27.0) (butlast vals))]
-      (boolean (and had-bulge (some? latest) (< latest 26.5))))
-
-    :psar-flip
-    (let [n (ta4j/bar-count series)]
-      (if (< n 2)
-        "none"
-        (let [psar-ind   (get ind-objs :psar)
-              last-i     (dec n)
-              prev-i     (- n 2)
-              close-curr (:close (nth bars last-i))
-              close-prev (:close (nth bars prev-i))
-              psar-curr  (ta4j/indicator-value psar-ind last-i)
-              psar-prev  (ta4j/indicator-value psar-ind prev-i)
-              curr-diff  (- close-curr psar-curr)
-              prev-diff  (- close-prev psar-prev)]
-          (cond
-            (and (neg? prev-diff) (>= curr-diff 0.0)) "bullish"
-            (and (pos? prev-diff) (<= curr-diff 0.0)) "bearish"
-            :else "none"))))
-
-    :obv-trend
-    (let [obv-ind (get ind-objs :obv)
-          n       (ta4j/bar-count series)
-          n50     (max 1 (min 50 n))
-          n20     (max 1 (min 20 n))
-          start50 (- n n50)
-          vals50  (mapv #(ta4j/indicator-value obv-ind %) (range start50 n))
-          vals20  (take-last n20 vals50)
-          sma50   (/ (apply + vals50) n50)
-          sma20   (/ (apply + vals20) n20)]
-      (cond
-        (> sma20 sma50) "rising"
-        (< sma20 sma50) "falling"
-        :else "flat"))))
+  (if-let [computer (get composite-computers (:kind spec))]
+    (computer :values values :ind-objs ind-objs :series series :bars bars)
+    (throw (ex-info (str "Unknown composite kind: " (name (:kind spec)))
+                    {:kind (:kind spec)}))))
 
 ;;; ── Schema helpers ──────────────────────────────────────────────────────────
 
@@ -254,7 +295,7 @@
    into latest_indicators, adding missing columns as needed.
    Computes base :indicators first (with history/percentile), then :composites."
   [ds symbol]
-  (let [cfg        (edn/read-string (slurp (io/resource "indicators.edn")))
+  (let [cfg        (load-config)
         specs      (:indicators cfg)
         comp-specs (:composites cfg)
         bars       (load-bars ds symbol)

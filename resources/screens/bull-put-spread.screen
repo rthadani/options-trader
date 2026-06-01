@@ -1,7 +1,0 @@
----
-name: Bull Put Spread
-description: Bullish momentum with MACD expansion, suitable for selling bull put spreads
-universe: latest_indicators
-tags: [bull-put-spread, momentum, macd, bullish]
----
-SELECT symbol FROM latest_indicators WHERE macd_hist > 0 AND rsi_14 > 40 AND rsi_14 < 65 ORDER BY macd_hist DESC LIMIT 20

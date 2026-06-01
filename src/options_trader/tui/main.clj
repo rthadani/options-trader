@@ -11,6 +11,7 @@
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
             [options-trader.data.ibkr :as ibkr]
+            [options-trader.paths :as paths]
             [options-trader.portfolio.core :as portfolio]
             [options-trader.tui.conversation :as conv]
             [options-trader.tui.llm :as llm]
@@ -18,7 +19,10 @@
             [options-trader.tui.runtime-context :as rt-ctx]
             [options-trader.tui.ibkr :as tui-ibkr]
             [options-trader.tui.render :as render-ui]
-            [options-trader.tui.state :as st])
+            [options-trader.tui.slash :as opts-slash]
+            [options-trader.tui.state :as st]
+            [options-trader.indicators.engine :as indicators]
+            [options-trader.screener.registry :as screener])
   (:import [org.jline.terminal Terminal]
            [org.jline.utils Signals]))
 
@@ -126,6 +130,93 @@
 
 ;;; ── Agent spawn ───────────────────────────────────────────────────────────
 
+(defn- start-process!
+  "Start a ProcessBuilder, returning the Process. Optionally sets env vars."
+  [pb env]
+  (when env
+    (let [pe (.environment pb)]
+      (doseq [[k v] env] (.put pe k v))))
+  (.start pb))
+
+(defn- build-process-builder [cmd cwd]
+  (doto (ProcessBuilder. ^java.util.List cmd)
+    (.directory (io/file cwd))
+    (.redirectErrorStream false)))
+
+(defn- write-user-msg! [^Process proc msg]
+  (with-open [writer (java.io.PrintWriter. (.getOutputStream proc) true)]
+    (.println writer msg)))
+
+(defn- read-stream-lines!
+  "Read lines from a process, calling line-handler for each.
+   Returns after the stream ends. Handles cleanup."
+  [^Process proc line-handler]
+  (with-open [reader (java.io.BufferedReader.
+                        (java.io.InputStreamReader. (.getInputStream proc)))]
+    (loop []
+      (when-let [line (.readLine reader)]
+        (line-handler line)
+        (recur))))
+  (.waitFor proc))
+
+(defn- skill-dirs
+  "Return absolute paths of every seeded skill subdir under
+   <runtime-claude>/skills/. Used to pass --skill <path> to pi (claude
+   auto-discovers via CLAUDE_CONFIG_DIR and doesn't need explicit flags)."
+  []
+  (let [root (io/file (paths/runtime-claude-skills-dir))]
+    (when (.isDirectory root)
+      (->> (.listFiles root)
+           (filter #(.isDirectory ^java.io.File %))
+           (mapv #(.getAbsolutePath ^java.io.File %))))))
+
+(defn- spawn-pi-agent!
+  "Spawn and monitor the pi agent subprocess. Resumes the prior pi session
+   for `scope` (or generates+records a new one on first use) so each scope
+   stays a continuous chat across messages and TUI restarts. Passes every
+   seeded skill dir via --skill so pi sees the same skills as claude."
+  [model provider system-prompt additional cwd scope user-msg]
+  (let [sid       (conv/ensure-pi-session-id! scope)
+        all-skill (vec (concat additional (skill-dirs)))
+        spec (pi-proc/spawn-pi {:model model :provider provider
+                                :system-prompt system-prompt
+                                :additional-dirs all-skill
+                                :session-id sid
+                                :cwd cwd})
+        pb   (build-process-builder (:cmd spec) cwd)
+        proc (start-process! pb nil)]
+    (try
+      (write-user-msg! proc user-msg)
+      (read-stream-lines! proc
+        (fn [line]
+          (when-let [ev (pi-proc/parse-event line)]
+            (handle-pi-event ev))))
+      (finally
+        (.destroyForcibly proc)))))
+
+(defn- spawn-claude-agent!
+  "Spawn and monitor the claude subprocess. Returns nil on error, truthy on success."
+  [model provider system-prompt additional cwd scope user-msg]
+  (let [prior       (conv/current-claude-session scope)
+        claude-args (cond-> ["--print" "--output-format" "stream-json"
+                             "--verbose" "--dangerously-skip-permissions"]
+                      system-prompt (conj "--system-prompt" system-prompt)
+                      true          (into (mapcat #(vector "--add-dir" %) additional))
+                      (:claude-session-id prior)
+                      (conj "--resume" (:claude-session-id prior)))
+        {:keys [cmd env]} (llm/streaming-invocation
+                            {:model model :provider provider :claude-args claude-args})
+        pb   (build-process-builder cmd cwd)
+        proc (start-process! pb env)
+        sid  (atom nil)]
+    (write-user-msg! proc user-msg)
+    (read-stream-lines! proc
+      (fn [line]
+        (when-let [ev (parse-event line)]
+          (handle-event ev sid))))
+    (when-let [s @sid]
+      (conv/record-claude-session! scope s))))
+
 (defn spawn-agent! [user-msg]
   (let [agent         (:agent @st/state :claude)
         model         (:model @st/state)
@@ -140,65 +231,8 @@
     (a/thread
       (try
         (case agent
-          :pi
-          (let [spec (pi-proc/spawn-pi {:model model :provider provider
-                                        :system-prompt system-prompt
-                                        :additional-dirs additional
-                                        :cwd cwd})
-                pb   (doto (ProcessBuilder. ^java.util.List (:cmd spec))
-                       (.directory (io/file cwd))
-                       (.redirectErrorStream false))
-                proc (.start pb)]
-            (try
-              (with-open [writer (java.io.PrintWriter. (.getOutputStream proc) true)]
-                (.println writer user-msg))
-              (let [reader (java.io.BufferedReader.
-                             (java.io.InputStreamReader. (.getInputStream proc)))]
-                (try
-                  (loop []
-                    (when-let [line (.readLine reader)]
-                      (let [ev (pi-proc/parse-event line)]
-                        (when ev (handle-pi-event ev))
-                        (when-not (= :done (:type ev))
-                          (recur)))))
-                  (finally
-                    (.close reader)
-                    (.destroyForcibly proc)
-                    (.waitFor proc 3 java.util.concurrent.TimeUnit/SECONDS))))
-              (catch Throwable t
-                (.destroyForcibly proc)
-                (throw t))))
-
-          ;; default :claude
-          (let [prior       (conv/current-claude-session scope)
-                claude-args (cond-> ["--print" "--output-format" "stream-json"
-                                     "--verbose" "--dangerously-skip-permissions"]
-                              system-prompt (conj "--system-prompt" system-prompt)
-                              true          (into (mapcat #(vector "--add-dir" %) additional))
-                              (:claude-session-id prior)
-                              (conj "--resume" (:claude-session-id prior)))
-                {:keys [cmd env]} (llm/streaming-invocation
-                                    {:model model :provider provider :claude-args claude-args})
-                pb       (doto (ProcessBuilder. ^java.util.List cmd)
-                           (.directory (io/file cwd))
-                           (.redirectErrorStream false))
-                _        (let [pe (.environment pb)]
-                           (doseq [[k v] env] (.put pe k v)))
-                proc     (.start pb)
-                sid      (atom nil)]
-            (with-open [writer (java.io.PrintWriter. (.getOutputStream proc) true)]
-              (.println writer user-msg))
-            (with-open [reader (java.io.BufferedReader.
-                                 (java.io.InputStreamReader. (.getInputStream proc)))]
-              (loop []
-                (when-let [line (.readLine reader)]
-                  (when-let [ev (parse-event line)]
-                    (handle-event ev sid))
-                  (recur))))
-            (.waitFor proc)
-            (when-let [s @sid]
-              (conv/record-claude-session! scope s))))
-
+          :pi     (spawn-pi-agent! model provider system-prompt additional cwd scope user-msg)
+          :claude (spawn-claude-agent! model provider system-prompt additional cwd scope user-msg))
         (catch Throwable t
           (st/append-chat! :system (str "agent error: " (.getMessage t)))
           (a/>!! refresh-chan :refresh))
@@ -215,6 +249,24 @@
     (st/append-chat! :system "portfolio refreshed from DB")
     (catch Throwable t
       (st/append-chat! :system (str "refresh failed: " (.getMessage t))))))
+
+(defn handle-reload-screens [_args ds]
+  (try
+    (screener/load-screens-from-dir! ds)
+    (st/append-chat! :system (str "screens reloaded from " (paths/screens-dir)))
+    (catch Throwable t
+      (st/append-chat! :system (str "screen reload failed: " (.getMessage t))))))
+
+(defn handle-reload-indicators [_args _ds]
+  (try
+    (let [cfg   (indicators/load-config)
+          inds  (count (:indicators cfg))
+          comps (count (:composites cfg))]
+      (st/append-chat! :system
+        (format "indicators.edn OK at %s — %d base, %d composites. Run /refresh-* to add columns + backfill."
+                (paths/indicators-file) inds comps)))
+    (catch Throwable t
+      (st/append-chat! :system (str "indicators reload failed: " (.getMessage t))))))
 
 (defn handle-model [args _ds]
   (if-let [m (first args)]
@@ -249,19 +301,15 @@
 (defn handle-disconnect [_args _ds]
   (tui-ibkr/disconnect!))
 
-(defn handle-investigate [args _ds]
-  (if-let [sym (some-> (first args) str/upper-case str/trim)]
-    (do (swap! st/state assoc :scope (keyword sym))
-        (st/append-chat! :system (str "scope = " sym)))
-    (st/append-chat! :system "usage: /investigate <SYMBOL>")))
-
 (defn handle-clear-investigation [_args _ds]
   (swap! st/state assoc :scope :scratch)
   (st/append-chat! :system "scope = scratch"))
 
 (defn handle-reset [_args _ds]
-  (conv/clear-claude-session! (:scope @st/state))
-  (st/append-chat! :system "claude session reset for current scope"))
+  (let [scope (:scope @st/state)]
+    (conv/clear-claude-session! scope)
+    (conv/clear-pi-session! scope)
+    (st/append-chat! :system "claude + pi sessions reset for current scope")))
 
 (defn handle-sessions [_args _ds]
   (let [rows (conv/list-claude-sessions)]
@@ -275,39 +323,96 @@
 (defn handle-help [_args _ds]
   (st/append-chat! :system
     (str/join "\n"
-      ["available commands:"
+      ["TUI-local commands (don't touch the agent):"
        "  /quit | /exit | /q              exit the TUI"
        "  /refresh                        re-read positions from DB"
+       "  /reload-screens                 rescan <config>/screens/ into DB"
+       "  /reload-indicators              validate <config>/indicators.edn"
        "  /connect | /disconnect          TWS connection"
-       "  /model [id]                     show or switch model"
+       "  /model [provider:id]            show or switch model"
        "  /agent [pi|claude]              show or switch agent"
-       "  /investigate <SYM>              set conversation scope to SYM"
        "  /clear-investigation            return to :scratch scope"
        "  /reset                          drop claude session for current scope"
        "  /sessions                       list tracked claude sessions"
-       "  /help                           this message"])))
+       ""
+       "Hybrid (TUI side-effect + tells the agent):"
+       "  /investigate <SYM>              focus scope on SYM + ask agent for overview"
+       ""
+       "Agent-routed (forwarded to claude/pi, uses MCP tools):"
+       "  /portfolio                      → portfolio_summary"
+       "  /screens                        → list_screens"
+       "  /run <screen> [args]            → run_screen"
+       ""
+       "Anything else you type is sent to the agent directly."])))
 
 (def ^:private command-table
+  "TUI-local commands. Mutate the TUI process state directly; never reach the
+   agent. Only put a command here when there's no MCP-tool equivalent (or the
+   side effect is purely TUI-local — model switching, scope state, quit, …)."
   {"/quit"                handle-quit
    "/exit"                handle-quit
    "/q"                   handle-quit
    "/refresh"             handle-refresh
+   "/reload-screens"      handle-reload-screens
+   "/reload-indicators"   handle-reload-indicators
    "/connect"             handle-connect
    "/disconnect"          handle-disconnect
    "/model"               handle-model
    "/agent"               handle-agent
-   "/investigate"         handle-investigate
    "/clear-investigation" handle-clear-investigation
    "/reset"               handle-reset
    "/sessions"            handle-sessions
    "/help"                handle-help})
 
+(def ^:private hybrid-commands
+  "Slash commands that BOTH mutate TUI state AND forward an explicit prompt
+   to the agent. The handler returns the prompt string (or nil to skip the
+   agent leg). Currently just /investigate — set scope locally so future
+   replies are scoped, then ask the agent for an overview using MCP tools."
+  {"/investigate"
+   (fn [args]
+     (if-let [sym (opts-slash/normalise-symbol (first args))]
+       (do (swap! st/state assoc :scope (keyword sym))
+           (st/append-chat! :system (str "scope = " sym))
+           (str "I want to investigate " sym ". Give me a quick overview — "
+                "call portfolio_summary to see if I hold it, then use the "
+                "fetch_news, fetch_filings and get_indicators tools to surface "
+                "anything notable. Keep it brief."))
+       (do (st/append-chat! :system "usage: /investigate <SYMBOL>") nil)))})
+
+(def ^:private agent-routed
+  "Slash commands forwarded to the agent as natural language. The agent has
+   MCP tools (portfolio_summary, list_screens, run_screen, etc.) and picks
+   the right one based on the prompt + runtime CLAUDE.md context. Each entry
+   names the expected MCP tool in the prompt so the agent doesn't have to
+   guess."
+  {"/portfolio" (fn [_args]
+                  "Show me my portfolio summary using the portfolio_summary tool.")
+   "/screens"   (fn [_args]
+                  "List the screens available using the list_screens tool.")
+   "/run"       (fn [args]
+                  (if (seq args)
+                    (str "Run the '" (first args) "' screen using the run_screen tool"
+                         (when (next args) (str " with arguments: " (str/join " " (next args))))
+                         ". Show me the matched symbols.")
+                    "Which screen should I run? Use list_screens to see what's available."))})
+
 (defn dispatch-slash [line ds]
   (let [parts (str/split (str/trim line) #"\s+")
         cmd   (first parts)
         args  (rest parts)]
-    (if-let [h (get command-table cmd)]
-      (h args ds)
+    (cond
+      (get command-table cmd)
+      ((get command-table cmd) args ds)
+
+      (get hybrid-commands cmd)
+      (when-let [prompt ((get hybrid-commands cmd) args)]
+        (spawn-agent! prompt))
+
+      (get agent-routed cmd)
+      (spawn-agent! ((get agent-routed cmd) args))
+
+      :else
       (st/append-chat! :system (str "unknown command: " cmd)))))
 
 (defn on-enter [state ds]
@@ -439,84 +544,103 @@
     (.start thread)
     thread))
 
+;;; ── TUI lifecycle ──────────────────────────────────────────────────────────
+
+(defn- init-tui-state!
+  "Initialize state atom and run any startup refresh."
+  [{:keys [ds account-id ibkr-config initial-message]}]
+  (st/reset-state!)
+  (reset! ds-atom ds)
+  (when account-id (swap! st/state assoc :account-id account-id))
+  (when initial-message (st/append-chat! :system initial-message))
+  (when ds
+    (try (refresh-portfolio! ds)
+         (catch Throwable t
+           (st/append-chat! :system (str "portfolio load skipped: " (.getMessage t))))))
+  (when ds
+    (try
+      (screener/load-screens-from-dir! ds)
+      (screener/start-watcher! ds)
+      (catch Throwable t
+        (st/append-chat! :system (str "screener init failed: " (.getMessage t))))))
+  (when (and ds ibkr-config)
+    (tui-ibkr/connect-async! (assoc ibkr-config :ds ds))))
+
+(defn- init-terminal []
+  (let [terminal     (term/create-terminal)
+        original     (term/enter-raw-mode terminal)
+        {:keys [width height]} (term/get-size terminal)
+        renderer     (render/create-renderer terminal
+                                             :fps 60
+                                             :alt-screen true
+                                             :hide-cursor false)
+        keymap       (km/create-keymap terminal)]
+    (reset! state-width width)
+    (reset! state-height height)
+    {:terminal terminal :original-attrs original
+     :width width :height height
+     :renderer renderer :keymap keymap}))
+
+(defn- register-signal-handlers! [terminal renderer running? last-size]
+  (Signals/register "WINCH"
+    (reify Runnable
+      (run [_]
+        (let [s (term/get-size terminal)]
+          (when (or (not= (:width s) (:width @last-size))
+                    (not= (:height s) (:height @last-size)))
+            (reset! last-size s)
+            (reset! state-width (:width s))
+            (reset! state-height (:height s))
+            (render/update-size! renderer (:width s) (:height s))
+            (do-render! renderer))))))
+  (Signals/register "INT"
+    (reify Runnable
+      (run [_]
+        (reset! running? false)))))
+
+(defn- run-event-loop! [^Terminal terminal keymap input-chan running? renderer]
+  (let [^Thread input-thread (start-input-thread! terminal keymap input-chan running?)]
+    (try
+      (loop []
+        (when (and @running? (not (:exit? @st/state)))
+          (let [[v ch] (a/alts!! [input-chan refresh-chan (a/timeout 12)]
+                                 :priority true)]
+            (when (= ch refresh-chan)
+              (do-render! renderer))
+            (when (= ch input-chan)
+              (when v
+                (when (= :key (:type v))
+                  (process-key v))
+                (do-render! renderer))))
+          (recur)))
+      @st/state
+      (finally
+        (.interrupt input-thread)
+        (a/close! input-chan)))))
+
+(defn- cleanup-tui! [terminal original-attrs renderer input-chan]
+  (try (screener/stop-watcher!) (catch Throwable _))
+  (when renderer (render/stop! renderer))
+  (when terminal
+    (term/set-attributes terminal original-attrs)
+    (term/close terminal)))
+
 (defn start!
   ([] (start! {}))
-  ([{:keys [ds account-id ibkr-config initial-message]}]
-   (st/reset-state!)
-   (reset! ds-atom ds)
-   (when account-id (swap! st/state assoc :account-id account-id))
-   (when initial-message (st/append-chat! :system initial-message))
-   (when ds
-     (try (refresh-portfolio! ds)
-          (catch Throwable t
-            (st/append-chat! :system (str "portfolio load skipped: " (.getMessage t))))))
-   (when (and ds ibkr-config)
-     (tui-ibkr/connect-async! (assoc ibkr-config :ds ds)))
-
-   (let [^Terminal terminal     (term/create-terminal)
-         original-attrs         (term/enter-raw-mode terminal)
-         {:keys [width height]} (term/get-size terminal)
-         renderer               (render/create-renderer terminal
-                                                       :fps 60
-                                                       :alt-screen true
-                                                       :hide-cursor false)
-         keymap                 (km/create-keymap terminal)
-         running?               (atom true)
-         input-chan             (a/chan 64)
-         last-size              (atom {:width width :height height})]
-
-     (reset! state-width width)
-     (reset! state-height height)
-
-     (Signals/register "WINCH"
-                       (reify Runnable
-                         (run [_]
-                           (let [s (term/get-size terminal)]
-                             (when (or (not= (:width s) (:width @last-size))
-                                       (not= (:height s) (:height @last-size)))
-                               (reset! last-size s)
-                               (reset! state-width (:width s))
-                               (reset! state-height (:height s))
-                               (render/update-size! renderer (:width s) (:height s))
-                               (do-render! renderer))))))
-
-     (Signals/register "INT"
-                       (reify Runnable
-                         (run [_]
-                           (reset! running? false))))
-
+  ([{:keys [ds account-id ibkr-config initial-message] :as config}]
+   (init-tui-state! config)
+   (let [{:keys [^Terminal terminal original-attrs renderer keymap]
+          :as _tenv}     (init-terminal)
+         running?        (atom true)
+         input-chan      (a/chan 64)
+         last-size       (atom {:width @state-width :height @state-height})]
+     (register-signal-handlers! terminal renderer running? last-size)
      (render/start! renderer)
      (do-render! renderer)
-
-     (let [^Thread input-thread (start-input-thread! terminal keymap input-chan running?)]
-       (try
-         (loop []
-           (when (and @running? (not (:exit? @st/state)))
-             (let [[v ch] (a/alts!! [input-chan refresh-chan (a/timeout 12)]
-                                    :priority true)]
-               (when (= ch refresh-chan)
-                 (do-render! renderer))
-               (when (= ch input-chan)
-                 (when v
-                   (case (:type v)
-                     :key    (process-key v)
-                     :mouse  nil
-                     :focus  nil
-                     :blur   nil
-                     nil)
-                   (do-render! renderer))))
-             (recur)))
-
-         ;; Return final state
-         @st/state
-
-         (finally
-           (.interrupt input-thread)
-           (reset! running? false)
-           (a/close! input-chan)
-           (render/stop! renderer)
-           (term/set-attributes terminal original-attrs)
-           (term/close terminal)))))))
+     (try
+       (run-event-loop! terminal keymap input-chan running? renderer)
+       (finally
+         (cleanup-tui! terminal original-attrs renderer input-chan))))))
 
 (defn -main [& _]
   (start! {:initial-message "Welcome to Options Trader. Type /help for commands, /quit to exit."}))

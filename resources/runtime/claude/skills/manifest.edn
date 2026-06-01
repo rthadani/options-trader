@@ -1,0 +1,8 @@
+;; Starter skills shipped with options-trader. On init/launch, each entry
+;; below is seeded from resources/runtime/claude/skills/<name>/SKILL.md
+;; into <runtime-claude>/skills/<name>/SKILL.md. Add new starters by
+;; dropping a directory with SKILL.md alongside this manifest and
+;; appending its directory name here.
+["option-chain"
+ "filings-research"
+ "iv-analysis"]

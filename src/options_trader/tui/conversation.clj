@@ -70,12 +70,15 @@
 
 (def ^:private claude-sessions
   "{scope-key → {:claude-session-id str
-                  :tokens-input  long
-                  :tokens-output long
-                  :turn-count    long
-                  :updated-at    ms}}
+                  :pi-session-id     str
+                  :tokens-input      long
+                  :tokens-output     long
+                  :turn-count        long
+                  :updated-at        ms}}
 
-   scope-key is a ticker symbol string or :scratch."
+   scope-key is a ticker symbol string or :scratch. The atom is named for
+   historical reasons; it tracks BOTH agents' session ids per scope — only
+   the id field differs. Token counts and turn-count are agent-agnostic."
   (atom {}))
 
 (def default-persist-path
@@ -116,11 +119,47 @@
 
 (defn clear-claude-session!
   "Drop the claude session-id binding for scope-key. The claude JSONL file on
-   disk is NOT touched — it stays in ~/.claude/projects/ for inspection or
-   manual recovery; only the in-process binding is forgotten. Next message in
-   this scope will spawn fresh."
+   disk is NOT touched — it stays in <runtime-claude>/projects/ for inspection
+   or manual recovery; only the in-process binding is forgotten. Next claude
+   message in this scope will spawn a fresh session. Does NOT touch the
+   per-scope pi-session-id."
   [scope-key]
-  (swap! claude-sessions dissoc scope-key)
+  (swap! claude-sessions update scope-key dissoc :claude-session-id)
+  nil)
+
+;;; ── Pi session API (mirrors the claude one) ────────────────────────────────
+
+(defn current-pi-session
+  "Return the per-scope session map (same shape as current-claude-session, but
+   the pi-side id is under :pi-session-id). Returns nil if the scope is unseen."
+  [scope-key]
+  (get @claude-sessions scope-key))
+
+(defn record-pi-session!
+  "Persist a pi session-id for scope-key. Idempotent."
+  [scope-key session-id]
+  (swap! claude-sessions update scope-key
+         (fn [prev]
+           (-> (or prev {:tokens-input 0 :tokens-output 0 :turn-count 0})
+               (assoc :pi-session-id session-id
+                      :updated-at    (System/currentTimeMillis)))))
+  session-id)
+
+(defn ensure-pi-session-id!
+  "Return the pi session-id bound to scope-key, generating + recording a new
+   UUID if none exists. Pi's `--session-id <id>` creates the session on disk
+   when first used, so the TUI can just hand it a deterministic id per scope."
+  [scope-key]
+  (or (:pi-session-id (current-pi-session scope-key))
+      (let [id (str (UUID/randomUUID))]
+        (record-pi-session! scope-key id)
+        id)))
+
+(defn clear-pi-session!
+  "Drop the pi session-id binding for scope-key. The pi session file under
+   <pi-session-dir>/ is NOT touched. Does NOT touch claude-session-id."
+  [scope-key]
+  (swap! claude-sessions update scope-key dissoc :pi-session-id)
   nil)
 
 (defn list-claude-sessions

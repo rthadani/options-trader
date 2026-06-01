@@ -1,9 +1,26 @@
 (ns options-trader.screener.registry-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [next.jdbc :as jdbc]
+            [options-trader.paths              :as paths]
             [options-trader.screener.registry  :as registry]))
+
+(defn- isolate-screens-dir
+  "Per-test fixture: redirect paths/config-root (and therefore screens-dir)
+   to a fresh temp dir so save-screen! doesn't pollute the user's real
+   ~/.config/options-trader/screens/."
+  [t]
+  (let [tmp (str (System/getProperty "java.io.tmpdir")
+                 "/options-trader-test-" (System/nanoTime))]
+    (.mkdirs (io/file tmp "screens"))
+    (binding [paths/*config-root-override* tmp]
+      (try (t)
+           (finally
+             (doseq [f (reverse (file-seq (io/file tmp)))]
+               (.delete f)))))))
+
+(use-fixtures :each isolate-screens-dir)
 
 (defn- make-test-ds
   []
@@ -190,7 +207,7 @@
 
 (deftest run-starter-screen-test
   (let [ds       (make-test-ds)
-        f        (io/file "resources/screens/oversold-mean-revert.screen")
+        f        (io/file "resources/screens/Oversold-Mean-Revert.screen")
         content  (slurp f)
         sql-line (some #(when (str/starts-with? (str/trim %) "SELECT") (str/trim %))
                        (str/split-lines content))]

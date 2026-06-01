@@ -1,8 +1,17 @@
 (ns options-trader.tui.pi-proc
   "Pi agent subprocess handling. Mirrors claude-proc but targets the pi CLI
-   (`pi -p --mode json`) instead of claude."
+   (`pi -p --mode json`) instead of claude.
+
+   The TUI spawns pi with full isolation from the host's ~/.pi config:
+     --no-skills --no-extensions   skip user-level skills/extensions
+     --session-dir <path>          per-product session storage
+     --mcp-config <path>           load only options-trader's MCP server
+   Only the explicit --skill <path> and --extension <path> flags load
+   anything else."
   (:require [cheshire.core   :as json]
-            [clojure.string  :as str]))
+            [clojure.java.io :as io]
+            [clojure.string  :as str]
+            [options-trader.paths :as paths]))
 
 (defn spawn-pi
   "Return a spawn-params map {:cmd :env :cwd} for the pi CLI.
@@ -10,16 +19,30 @@
    :provider is forwarded as `--provider`; :model as `--model`;
    :system-prompt is forwarded as `--system-prompt`;
    :additional-dirs is forwarded as repeated `--skill` flags (pi's closest
-   equivalent to `--add-dir`)."
-  [{:keys [model provider system-prompt cwd additional-dirs]
+   equivalent to `--add-dir`).
+   :session-id, when supplied, is forwarded as `--session-id <id>`, which pi
+   creates on first use and resumes on subsequent ones — the mechanic that
+   makes the in-TUI pi agent feel like a continuous chat per scope.
+
+   The spawn is isolated from ~/.pi via --no-skills/--no-extensions; sessions
+   land in paths/pi-session-dir; the options-trader MCP server is registered
+   via --mcp-config pointing at paths/pi-mcp-file when present."
+  [{:keys [model provider system-prompt cwd additional-dirs session-id]
     :or   {cwd "."}}]
-  {:cmd (cond-> ["pi" "-p" "--mode" "json"]
-          provider      (conj "--provider" (name provider))
-          model         (conj "--model" model)
-          system-prompt (conj "--system-prompt" system-prompt)
-          true          (into (mapcat #(vector "--skill" %) additional-dirs)))
-   :env {}
-   :cwd cwd})
+  (let [session-dir (paths/ensure-dir! (paths/pi-session-dir))
+        mcp-file    (paths/pi-mcp-file)
+        mcp?        (.exists (io/file mcp-file))]
+    {:cmd (cond-> ["pi" "-p" "--mode" "json"
+                   "--no-skills" "--no-extensions"
+                   "--session-dir" session-dir]
+            session-id    (conj "--session-id" session-id)
+            mcp?          (conj "--mcp-config" mcp-file)
+            provider      (conj "--provider" (name provider))
+            model         (conj "--model" model)
+            system-prompt (conj "--system-prompt" system-prompt)
+            true          (into (mapcat #(vector "--skill" %) additional-dirs)))
+     :env {}
+     :cwd cwd}))
 
 (defn ask
   "Send message to the pi CLI via spawn-fn.

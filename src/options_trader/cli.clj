@@ -3,6 +3,7 @@
             [clojure.tools.cli               :as tools-cli]
             [options-trader.actions.core     :as actions]
             [options-trader.config           :as config]
+            [options-trader.data.edgar       :as edgar]
             [options-trader.data.ibkr        :as ibkr]
             [options-trader.data.universes   :as universes]
             [options-trader.db.duckdb        :as duckdb]
@@ -10,6 +11,10 @@
             [options-trader.portfolio.core   :as portfolio]
             [options-trader.screener.registry :as screener])
   (:gen-class))
+
+(defn- apply-edgar-source! [cfg]
+  (when-let [edgar-cfg (get-in cfg [:data-sources :edgar])]
+    (edgar/set-default-source! (edgar/make-source edgar-cfg))))
 
 (def ^:private cli-options
   [["-h" "--help" "Show usage"]
@@ -179,6 +184,12 @@
             {:error (.getMessage t) :ex-data (ex-data t)}))))))
 
 (defn -main [& args]
+  (let [{:keys [options]} (tools-cli/parse-opts (vec args) cli-options :in-order true)]
+    (try
+      (apply-edgar-source! (config/load-config (:profile options)))
+      (catch Throwable t
+        (binding [*out* *err*]
+          (println "warning: failed to apply EDGAR config —" (.getMessage t))))))
   (let [result (dispatch (vec args))]
     (println result)
     (when (:error result) (System/exit 1))))

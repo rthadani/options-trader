@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "options-trader": {
+      "command": "clojure",
+      "args": ["-M:mcp-server"]
+    }
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "mcp__options-trader__*"
+    ]
+  }
+}

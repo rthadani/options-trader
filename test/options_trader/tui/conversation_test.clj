@@ -44,10 +44,33 @@
     (is (= 125 (:tokens-output s)))
     (is (= 2   (:turn-count s)))))
 
-(deftest clear-claude-session-removes-entry
+(deftest clear-claude-session-removes-claude-id-only
   (conv/record-claude-session! "AAPL" "sess-1")
   (conv/clear-claude-session! "AAPL")
-  (is (nil? (conv/current-claude-session "AAPL"))))
+  (is (nil? (:claude-session-id (conv/current-claude-session "AAPL")))
+      "claude-session-id is dropped"))
+
+(deftest clear-claude-session-leaves-pi-session-intact
+  (conv/record-claude-session! "AAPL" "claude-sess")
+  (conv/record-pi-session!     "AAPL" "pi-sess")
+  (conv/clear-claude-session!  "AAPL")
+  (let [s (conv/current-pi-session "AAPL")]
+    (is (nil? (:claude-session-id s)))
+    (is (= "pi-sess" (:pi-session-id s)))))
+
+(deftest ensure-pi-session-id-creates-then-reuses
+  (let [id1 (conv/ensure-pi-session-id! "MSFT")
+        id2 (conv/ensure-pi-session-id! "MSFT")]
+    (is (string? id1))
+    (is (= id1 id2) "second call returns the same id")))
+
+(deftest clear-pi-session-leaves-claude-intact
+  (conv/record-claude-session! "AAPL" "claude-sess")
+  (conv/record-pi-session!     "AAPL" "pi-sess")
+  (conv/clear-pi-session!      "AAPL")
+  (let [s (conv/current-claude-session "AAPL")]
+    (is (= "claude-sess" (:claude-session-id s)))
+    (is (nil? (:pi-session-id s)))))
 
 (deftest scratch-scope-is-just-another-key
   (conv/record-claude-session! :scratch "sess-scratch")

@@ -2,18 +2,16 @@
   "Action handler for proposing and adding indicator specs to indicators.edn.
    Triggered when a screen's description references a column that is not yet
    present on latest_indicators."
-  (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.pprint :as pp]
             [clojure.string :as str]
             [options-trader.actions.core :as actions]
+            [options-trader.indicators.engine :as engine]
             [options-trader.indicators.ta4j :as ta4j]
+            [options-trader.paths :as paths]
             [options-trader.tui.llm :as llm]))
 
-(def ^:private indicators-edn-path "resources/indicators.edn")
-
-(defn- read-config []
-  (edn/read-string (slurp (io/resource "indicators.edn"))))
+(defn- read-config [] (engine/load-config))
 
 (defn- already-present? [col]
   (let [cfg (read-config)
@@ -86,7 +84,9 @@
           updated (append-spec cfg (cond-> {:kind kind :column column}
                                      (seq params) (assoc :params params)
                                      (not (seq params)) (assoc :params [])))]
-      (spit indicators-edn-path (pretty-edn updated))
+      (let [target (io/file (paths/indicators-file))]
+        (.mkdirs (.getParentFile target))
+        (spit target (pretty-edn updated)))
       {:applied? true :spec spec})))
 
 (defmethod actions/handle-action :propose-indicator

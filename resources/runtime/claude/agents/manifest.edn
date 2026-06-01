@@ -1,0 +1,8 @@
+;; Starter sub-agents shipped with options-trader. On init/launch, each
+;; entry below is seeded from resources/runtime/claude/agents/<name>.md
+;; into <runtime-claude>/agents/<name>.md. Never overwrites — user edits
+;; survive upgrades. Add new starters by dropping a .md file alongside
+;; this manifest and appending its base name (without .md) here.
+["options-strategist"
+ "earnings-preview"
+ "position-risk"]

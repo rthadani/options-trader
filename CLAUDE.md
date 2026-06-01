@@ -54,8 +54,9 @@ src/options_trader/
                             by the next one.
   indicators/
     ta4j.clj                Java interop wrapper over ta4j 0.16
-    engine.clj              Reads resources/indicators.edn; ALTER TABLE on demand;
-                            populates latest_indicators + indicator_history
+    engine.clj              load-config reads <config-root>/indicators.edn
+                            (classpath fallback for tests). ALTER TABLE on
+                            demand; populates latest_indicators + indicator_history
     runner.clj              Topo-sorts indicator deps; runs per refresh
     composites.clj          ttm_squeeze_flag, macd_cross_flag, mass_reversal_flag, …
     iv.clj                  iv_rank_*/iv_percentile_* via DuckDB windows
@@ -86,7 +87,9 @@ src/options_trader/
                             complete / complete-json are sync one-shots for
                             slash commands and screener NL.
     runtime_context.clj     Three-layer system-prompt assembly
-    slash.clj               Local slash commands (/run /investigate /promote /model …)
+    slash.clj               normalise-symbol helper. Live slash dispatch
+                            (command-table + agent-routed forwarder) lives
+                            in tui/main.clj.
     conversation.clj        Session-id store + JSONL replay
   mcp/
     server.clj              -main for :mcp-server alias (stdio JSON-RPC)
@@ -96,12 +99,19 @@ src/options_trader/
                             cancel_order, plus 11 fetch_* research tools)
 resources/
   config.edn                aero profiles :dev (paper 7497) / :prod (live 7496)
-  indicators.edn            SOURCE OF TRUTH for indicator columns + percentile windows
+  indicators.edn            PACKAGED starter indicator specs — seeded once
+                            into <config-root>/indicators.edn on init/launch.
+                            All readers/writers point at the user copy after
+                            seeding (engine, screener.nl, action handler).
   event-flags.edn           Catalyst-proximity rules
   sentiment-lexicon.edn     VADER-style scorer default
   mcp/tools/*.json          One JSON Schema per MCP tool
   runtime/CLAUDE.md         Runtime system prompt (base layer for in-session claude)
-  screens/*.screen          Starter screens — front-matter + SQL body OR description
+  screens/*.screen          PACKAGED starter screens — seeded once into
+                            <config-root>/screens/ on init/launch; the watcher
+                            reads from there, never from resources.
+  screens/manifest.edn      Names of the .screen files to seed (add new starters
+                            by appending here).
   universes/*.universe      Static SP500/NDX/Mag7/etc. snapshots
   universes/sources.edn     Per-index URL + selector + ticker column
   universes/symbol-rules.edn Wikipedia → IB normalisation rules
@@ -155,14 +165,22 @@ Secrets that *are* needed (e.g. third-party data feeds) live in `.envrc`
   only the gap. A failed or skipped run is corrected by the next one
   observing the same stale MAX. Do not introduce stateful cursors.
 * **Indicators grow declaratively.** Adding a column = adding an
-  entry to `resources/indicators.edn`. The engine handles
-  `ALTER TABLE ADD COLUMN IF NOT EXISTS` and backfill. Renames keep
-  the old column for the deprecation window in `indicator_renames`.
+  entry to `<config-root>/indicators.edn` (seeded once from the packaged
+  `resources/indicators.edn` and never overwritten thereafter). The
+  engine handles `ALTER TABLE ADD COLUMN IF NOT EXISTS` and backfill on
+  the next refresh. Removing an entry does NOT drop the column —
+  destructive ops go through `indicator_renames` / explicit migration.
+  Renames keep the old column for the deprecation window.
 * **Screens are SQL or NL — never code.** A `.screen` file has YAML
   front-matter and either a SQL body or a description-only body. The
   watcher upserts within ~250 ms. Description-driven screens cache
   generated SQL keyed on the description-hash; the cache invalidates
   when the description text changes.
+* **Screens live outside the repo.** Authoritative location is
+  `<options_trader.paths/screens-dir>` (default `~/.config/options-trader/
+  screens/`). `resources/screens/` only holds *packaged starters* that get
+  copied into the user dir on init/launch (no overwrite). The watcher and
+  `/reload-screens` operate on the user dir; never on `resources/`.
 * **Missing indicators are an action, not a code change.** When the
   LLM signals `MISSING <col>` during description→SQL generation,
   `run-screen` returns `{:missing col}`. The caller routes to
@@ -210,14 +228,18 @@ Secrets that *are* needed (e.g. third-party data feeds) live in `.envrc`
 ## Extending
 
 * **New indicator column** → either add an entry to
-  `resources/indicators.edn` by hand (`:kind :params :column
-  :percentile-windows`), or let a description-driven screen reference
-  it; the engine adds the column with `ALTER TABLE` and backfills
-  history on the next refresh.
-* **New screen** → drop a `.screen` file under `resources/screens/`
-  (or `<config-dir>/screens/` for user screens); the watcher upserts
-  within ~250 ms. Front-matter + either SQL body OR a natural-language
-  description — pick one.
+  `<config-root>/indicators.edn` by hand (`:kind :params :column
+  :percentile-windows`) and run `/reload-indicators` to validate, or
+  let a description-driven screen reference it (the
+  `:propose-indicator`/`:add-indicator` action will write the spec
+  back to the same file). The engine adds the column with `ALTER TABLE`
+  and backfills history on the next refresh.
+* **New screen (user)** → drop a `.screen` file under
+  `<config-root>/screens/` (default `~/.config/options-trader/screens/`).
+  The watcher upserts within ~250 ms; `/reload-screens` forces a rescan.
+  Front-matter + either SQL body OR a natural-language description — pick
+  one. To ship a screen with the binary instead, drop it in
+  `resources/screens/` and add its base name to `resources/screens/manifest.edn`.
 * **New universe** → drop a `.universe` file or add a config entry to
   `resources/universes/sources.edn`. Daily refresh writes drift to
   `universe_drift_log` for user review.
@@ -230,12 +252,42 @@ Secrets that *are* needed (e.g. third-party data feeds) live in `.envrc`
   the new model sticks for the rest of the session. No provider
   abstraction — Claude Code only.
 
+## Standalone runtime config (isolated from ~/.claude and ~/.pi)
+
+The TUI spawns `claude`/`pi` subprocesses but keeps them fully isolated
+from the host user's CLIs:
+
+* **claude** — `tui.llm/streaming-invocation` injects
+  `CLAUDE_CONFIG_DIR=<options_trader.paths/runtime-claude-dir>` (default
+  `~/.config/options-trader/runtime-claude/`). That dir holds the MCP
+  server registration, agents, skills, and session history. `~/.claude`
+  is never read or written by the in-TUI agent.
+* **pi** — `tui.pi-proc/spawn-pi` passes `--no-skills --no-extensions`,
+  `--session-dir <paths/pi-session-dir>` (under `runtime-pi/sessions/`),
+  and `--mcp-config <paths/pi-mcp-file>` (seeded from
+  `resources/runtime/pi/mcp.json`) so pi sees the options-trader MCP
+  server and nothing else. Skills/extensions are loaded only via
+  explicit `--skill <path>` flags (no user-level discovery).
+* **Init** — `core.clj/init!` seeds both `<runtime-claude>/settings.json`
+  and `<runtime-pi>/mcp.json` from `resources/runtime/{claude,pi}/` on
+  first run. Never overwrites — user edits survive upgrades.
+* **`OPTIONS_TRADER_CONFIG_DIR`** env var overrides the default root,
+  e.g. for tests or alternate installs.
+
 ## Pointers
 
 * `resources/runtime/CLAUDE.md` — runtime system prompt for the
   in-session agent. Do NOT edit when working on the code unless you
   intend to change agent behaviour.
-* `.claude/settings.local.json` — declares the local MCP server.
-  Auto-generated by `clojure -M:run init`; user-editable.
+* `resources/runtime/claude/settings.json` — packaged claude config
+  (MCP server + permissions). Seeded into the per-user runtime-claude
+  dir on init.
+* `resources/runtime/pi/mcp.json` — packaged pi MCP config. Seeded into
+  the per-user runtime-pi dir on init; pi loads it via `--mcp-config`.
+* `src/options_trader/paths.clj` — XDG-style resolver for the per-user
+  config root and the subdirs above.
+* `.claude/settings.local.json` — repo-level dev permissions for working
+  ON the codebase (your own `claude` in this dir). Not used by the TUI's
+  spawned agent.
 * `bin/refresh` — cron wrapper, the reference for what each refresh
   subcommand expects.

@@ -1,0 +1,14 @@
+;; Starter screens shipped with options-trader. On init/launch, each entry
+;; below is seeded from resources/screens/<name>.screen into the per-user
+;; <config-root>/screens/ directory (without overwriting user edits).
+;; Add a new starter by dropping a .screen file alongside this manifest
+;; and appending its base name (without .screen) here.
+["Bull-Put-Spread"
+ "Buy-Premium-Long-Straddle"
+ "Near-Resistance"
+ "Near-Support"
+ "Oversold-Mean-Revert"
+ "Sell-Premium-Iron-Condor"
+ "Value-Plus-Oversold"
+ "Value-With-Growth"
+ "Vol-Expansion-Squeeze"]
