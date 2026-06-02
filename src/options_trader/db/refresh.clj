@@ -14,7 +14,8 @@
   (:import [java.time LocalDate LocalDateTime Instant ZoneId Duration]
            [java.time.format DateTimeFormatter]
            [java.time.temporal ChronoUnit]
-           [java.sql Timestamp]))
+           [java.sql Timestamp]
+           [java.util.concurrent Executors ExecutorCompletionService TimeUnit]))
 
 (def ^:private news-date-fmt
   (DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss.0"))
@@ -45,13 +46,21 @@
      (now-ts) status error id]))
 
 (defmacro with-log [ds task symbol & body]
-  `(let [id# (log-start! ~ds ~task ~symbol)]
+  `(let [id#    (log-start! ~ds ~task ~symbol)
+         start# (System/currentTimeMillis)]
+     (log/infof "════════ %s ════════" ~task)
      (try
        (let [r# (do ~@body)]
          (log-finish! ~ds id# "ok" nil)
+         (log/infof "════════ %s done in %.1fs ════════"
+                    ~task (/ (- (System/currentTimeMillis) start#) 1000.0))
          r#)
        (catch Throwable t#
          (log-finish! ~ds id# "error" (.getMessage t#))
+         (log/warnf "════════ %s FAILED in %.1fs: %s ════════"
+                    ~task
+                    (/ (- (System/currentTimeMillis) start#) 1000.0)
+                    (.getMessage t#))
          (throw t#)))))
 
 ;;; ── Async helpers ──────────────────────────────────────────────────────────
@@ -65,6 +74,19 @@
       (let [v (deref p timeout-ms ::timeout)]
         (if (= ::timeout v) ::timeout v)))))
 
+(def ^:dynamic *fail-fast-consecutive*
+  "Abort a refresh run if this many symbols in a row time out or come back
+   :unavailable. Catches a broken TWS connection on call ~6 instead of after
+   the whole universe."
+  5)
+
+(def ^:dynamic *parallelism*
+  "How many IB requests to keep in flight concurrently for symbol-by-symbol
+   refresh tasks. Capped well under IB's 50-req/sec global pacer and 50
+   concurrent-historical-data ceiling. Override per call via opts or by
+   rebinding for tests."
+  16)
+
 (defn- ->iso-date [s]
   (let [s (str s)]
     (if (re-matches #"\d{8}" s)
@@ -72,23 +94,85 @@
       s)))
 
 (defn- each-symbol!
+  "Fan f over symbols with bounded concurrency (*parallelism* in-flight at a
+   time), tally outcomes as they complete, and log per-symbol progress.
+
+   f may return:
+     {:rows N}              — ok
+     {:timeout? true}       — timeout
+     :unavailable           — unavailable
+     nil / anything else    — empty
+   A thrown exception is caught and counted as error.
+
+   Aborts the whole run with ex-info if *fail-fast-consecutive* completions in
+   a row come back bad — almost always means TWS is wedged and the remaining
+   calls would all time out. Running futures are interrupted on abort."
   [task symbols f]
-  (let [start (System/currentTimeMillis)
-        acc   (atom {:symbols-ok 0 :symbols-err 0 :rows 0})]
+  (let [start      (System/currentTimeMillis)
+        total      (count symbols)
+        n          (max 1 (min *parallelism* (max 1 total)))
+        pool       (Executors/newFixedThreadPool n)
+        ecs        (ExecutorCompletionService. pool)
+        acc        (atom {:symbols-ok 0 :symbols-err 0 :symbols-empty 0
+                          :timeouts 0 :unavailable 0 :rows 0})
+        consec-bad (atom 0)]
+    (log/infof "%s: %d symbols, parallelism=%d" task total n)
     (doseq [sym symbols]
-      (try
-        (if-let [r (f sym)]
-          (swap! acc (fn [m] (-> m
-                                 (update :symbols-ok inc)
-                                 (update :rows + (or (:rows r) 0)))))
-          (do (log/warnf "%s %s: no result (fetch failed or empty)" task sym)
-              (swap! acc update :symbols-err inc)))
-        (catch Throwable t
-          (log/warnf "%s %s failed: %s" task sym (.getMessage t))
-          (swap! acc update :symbols-err inc))))
+      (.submit ecs ^Callable
+        (fn []
+          (try [sym (f sym)]
+               (catch Throwable t [sym t])))))
+    (try
+      (loop [i 1]
+        (when (<= i total)
+          (let [[sym r]
+                (try (.get (.take ecs))
+                     (catch Throwable t [nil t]))
+
+                outcome
+                (cond
+                  (instance? Throwable r)
+                  (do (log/warnf "%s [%d/%d] %s failed: %s"
+                                 task i total sym (.getMessage ^Throwable r))
+                      (swap! acc update :symbols-err inc) :bad)
+
+                  (= :unavailable r)
+                  (do (log/warnf "%s [%d/%d] %s unavailable (TWS rejected)"
+                                 task i total sym)
+                      (swap! acc update :unavailable inc) :bad)
+
+                  (:timeout? r)
+                  (do (log/warnf "%s [%d/%d] %s timeout — IB never returned"
+                                 task i total sym)
+                      (swap! acc update :timeouts inc) :bad)
+
+                  (map? r)
+                  (let [rows (or (:rows r) 0)]
+                    (log/infof "%s [%d/%d] %s ok (%d rows)" task i total sym rows)
+                    (swap! acc (fn [m] (-> m
+                                           (update :symbols-ok inc)
+                                           (update :rows + rows))))
+                    :ok)
+
+                  :else
+                  (do (log/warnf "%s [%d/%d] %s no data" task i total sym)
+                      (swap! acc update :symbols-empty inc) :empty))]
+            (if (= :bad outcome)
+              (swap! consec-bad inc)
+              (reset! consec-bad 0))
+            (when (>= @consec-bad *fail-fast-consecutive*)
+              (.shutdownNow pool)
+              (throw (ex-info (format "%s aborted: %d consecutive failures — is TWS connected?"
+                                      (name task) @consec-bad)
+                              (assoc @acc :task task :aborted-at i :total total)))))
+          (recur (inc i))))
+      (finally
+        (.shutdown pool)
+        (try (.awaitTermination pool 5 TimeUnit/SECONDS)
+             (catch InterruptedException _))))
     (assoc @acc
            :task       task
-           :n-symbols  (count symbols)
+           :n-symbols  total
            :elapsed-ms (- (System/currentTimeMillis) start))))
 
 ;;; ── Bars (daily) — incremental ─────────────────────────────────────────────
@@ -131,7 +215,7 @@
 
 (defn refresh-bars-daily!
   [{:keys [conn ds symbols timeout-ms compute-indicators?]
-    :or   {timeout-ms 60000 compute-indicators? true}}]
+    :or   {timeout-ms 15000 compute-indicators? true}}]
   (with-log ds :bars-daily nil
     (let [result (each-symbol! :bars-daily symbols
                    (fn [sym]
@@ -142,16 +226,25 @@
                                       (ibkr/req-historical-bars
                                         conn (ibkr/->contract sym) "1 day" dur cb))
                                     timeout-ms)]
-                       (when (sequential? bars)
-                         {:rows (insert-bars-daily!
-                                  ds (map #(assoc % :symbol sym) bars))}))))]
+                       (cond
+                         (= :unavailable bars) :unavailable
+                         (= ::timeout    bars) {:timeout? true}
+                         (sequential?    bars) {:rows (insert-bars-daily!
+                                                        ds (map #(assoc % :symbol sym) bars))}
+                         :else                 nil))))]
       (cond-> result
         compute-indicators?
         (assoc :indicators
-               (try (indicators/refresh-derived-indicators! ds)
-                    (catch Throwable t
-                      (log/warnf t "indicator recompute failed")
-                      :error)))))))
+               (let [t0 (System/currentTimeMillis)]
+                 (log/info "computing derived indicators (this can take a while)...")
+                 (try
+                   (let [r (indicators/refresh-derived-indicators! ds)]
+                     (log/infof "derived indicators done in %.1fs"
+                                (/ (- (System/currentTimeMillis) t0) 1000.0))
+                     r)
+                   (catch Throwable t
+                     (log/warnf t "indicator recompute failed")
+                     :error))))))))
 
 ;;; ── Bars (intraday) — incremental ──────────────────────────────────────────
 
@@ -207,7 +300,7 @@
 
 (defn refresh-bars-intraday!
   [{:keys [conn ds symbols bar-size timeout-ms]
-    :or   {bar-size "15 mins" timeout-ms 60000}}]
+    :or   {bar-size "15 mins" timeout-ms 15000}}]
   (with-log ds :bars-intraday nil
     (each-symbol! :bars-intraday symbols
       (fn [sym]
@@ -218,9 +311,12 @@
                           (ibkr/req-historical-bars
                             conn (ibkr/->contract sym) bar-size dur cb))
                         timeout-ms)]
-          (when (sequential? bars)
-            {:rows (insert-bars-intraday!
-                     ds bar-size (map #(assoc % :symbol sym) bars))}))))))
+          (cond
+            (= :unavailable bars) :unavailable
+            (= ::timeout    bars) {:timeout? true}
+            (sequential?    bars) {:rows (insert-bars-intraday!
+                                           ds bar-size (map #(assoc % :symbol sym) bars))}
+            :else                 nil))))))
 
 ;;; ── News (headlines + sentiment) — incremental ─────────────────────────────
 
@@ -241,17 +337,20 @@
       (.format ldt news-date-fmt))))
 
 
-(defn- insert-news-rows! [ds sym headlines sentiment]
+(defn- insert-news-rows! [ds sym headlines _sentiment]
   (let [rows (->> headlines
                   (keep (fn [h]
                           (when-let [id (or (:article-id h) (:id h))]
-                            [id sym
-                             (or (:headline h) (:title h) "")
-                             (or (:url h) "")
-                             (or (:provider-code h) (:source h) "")
-                             (or (:published-at h) (:time h))
-                             (some-> sentiment :classification name)
-                             (json/generate-string h)])))
+                            (let [raw  (or (:headline h) (:title h) "")
+                                  ;; Per-article sentiment: K: from provider
+                                  ;; metadata if present, else lexicon.
+                                  sent (name (news/classify (news/score-headline raw)))]
+                              [id sym raw
+                               (or (:url h) "")
+                               (or (:provider-code h) (:source h) "")
+                               (or (:published-at h) (:time h))
+                               sent
+                               (json/generate-string h)]))))
                   vec)]
     (when (seq rows)
       (jdbc/execute-batch! ds
@@ -269,22 +368,33 @@
     (let [src (news/make-source {:type :ibkr :ib-client conn})]
       (each-symbol! :news symbols
         (fn [sym]
-          (let [start  (news-start-date-for-gap (latest-news-published ds sym))
-                params (merge {:limit 25} params {:start-date start})
-                p      (promise)
-                rid    (news/fetch-news-headlines sym params src
-                         (fn [evs] (deliver p evs)))
-                evs    (if (= :unavailable rid) [] (deref p timeout-ms []))
-                hs     (filter #(or (:article-id %) (:id %)) evs)
-                sen    (news/fetch-news-sentiment sym params src)]
-            {:rows (insert-news-rows! ds sym hs sen)}))))))
+          (let [start   (news-start-date-for-gap (latest-news-published ds sym))
+                params  (merge {:limit 25} params {:start-date start})
+                p       (promise)
+                rid     (news/fetch-news-headlines sym params src
+                          (fn [evs] (deliver p evs)))]
+            (cond
+              (= :unavailable rid) :unavailable
+              :else
+              (let [evs (deref p timeout-ms ::timeout)]
+                (if (= ::timeout evs)
+                  {:timeout? true}
+                  (let [hs  (filter #(or (:article-id %) (:id %)) evs)
+                        sen (news/fetch-news-sentiment sym params src)]
+                    {:rows (insert-news-rows! ds sym hs sen)}))))))))))
 
 ;;; ── Fundamentals (EDGAR) ───────────────────────────────────────────────────
 
 (defn refresh-fundamentals!
-  [{:keys [ds]}]
+  [{:keys [ds symbols]}]
   (with-log ds :fundamentals nil
-    (indicators/refresh-fundamentals! ds)))
+    (log/infof "fundamentals: pulling from EDGAR (%s)..."
+               (if symbols (str (count symbols) " symbols") "all symbols in bars_daily"))
+    (let [t0 (System/currentTimeMillis)
+          r  (indicators/refresh-fundamentals! ds (cond-> {} symbols (assoc :symbols symbols)))]
+      (log/infof "fundamentals done in %.1fs"
+                 (/ (- (System/currentTimeMillis) t0) 1000.0))
+      r)))
 
 ;;; ── Filings (EDGAR) — incremental ──────────────────────────────────────────
 

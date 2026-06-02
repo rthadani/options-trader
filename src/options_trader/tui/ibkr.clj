@@ -22,7 +22,7 @@
 
 ;;; ── Refresh ────────────────────────────────────────────────────────────────
 
-(defn- refresh-from-ibkr! [ds account-id]
+(defn refresh-from-ibkr! [ds account-id]
   (when-let [conn @conn-atom]
     (try
       (let [src (portfolio/->IbkrSource conn ds account-id)]

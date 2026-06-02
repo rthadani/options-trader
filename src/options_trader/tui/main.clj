@@ -16,20 +16,52 @@
             [options-trader.tui.conversation :as conv]
             [options-trader.tui.llm :as llm]
             [options-trader.tui.pi-proc :as pi-proc]
+            [options-trader.tui.proc :as proc]
             [options-trader.tui.runtime-context :as rt-ctx]
             [options-trader.tui.ibkr :as tui-ibkr]
             [options-trader.tui.render :as render-ui]
             [options-trader.tui.slash :as opts-slash]
             [options-trader.tui.state :as st]
             [options-trader.indicators.engine :as indicators]
-            [options-trader.screener.registry :as screener])
+            [options-trader.screener.registry :as screener]
+            [taoensso.timbre :as log]
+            [taoensso.timbre.appenders.core :as log-appenders])
   (:import [org.jline.terminal Terminal]
            [org.jline.utils Signals]))
 
-(defonce ^:private refresh-chan (a/chan 64))
+;; Dropping buffer of 1: multiple refresh signals coalesce into a single
+;; "render at most once" cue. Without this, the blocking `>!!` writers used
+;; by the event handlers back-pressured the stream-reader thread under heavy
+;; streaming (50+ events/sec from pi/claude) → TUI froze once chat filled.
+(defonce ^:private refresh-chan (a/chan (a/dropping-buffer 1)))
 (defonce ^:private ds-atom (atom nil))
+;; Holds the currently-spawned agent Process so Escape can kill it. Reset
+;; before each spawn and cleared in the spawn's finally block. Single in-flight
+;; request invariant — the TUI rejects new sends while :streaming? is true.
+(defonce ^:private running-proc-atom (atom nil))
 (def state-width (atom 80))
 (def state-height (atom 24))
+
+(defn port->mode
+  "Classify a TWS/Gateway port. 7497/4002 = paper, 7496/4001 = live. The TUI
+   surfaces this so 'oh I thought I was on prod' surprises don't happen."
+  [port]
+  (case (int (or port 0))
+    7497 :paper-tws
+    4002 :paper-gateway
+    7496 :live-tws
+    4001 :live-gateway
+    :unknown))
+
+(defn- mode-banner [profile ibkr-config]
+  (let [{:keys [host port client-id]} ibkr-config
+        mode (port->mode port)
+        warn? (#{:paper-tws :paper-gateway :unknown} mode)]
+    (str (if warn? "⚠  " "✅ ")
+         "profile=" (or profile "dev")
+         "  ib=" host ":" port
+         "  mode=" (name mode)
+         "  client-id=" client-id)))
 
 (defn default-account-id [ds]
   (or (ibkr/default-account)
@@ -130,18 +162,35 @@
 
 ;;; ── Agent spawn ───────────────────────────────────────────────────────────
 
-(defn- start-process!
-  "Start a ProcessBuilder, returning the Process. Optionally sets env vars."
-  [pb env]
-  (when env
-    (let [pe (.environment pb)]
-      (doseq [[k v] env] (.put pe k v))))
-  (.start pb))
+(defn- start-streaming-proc!
+  "Start a streaming agent subprocess (claude / pi). stderr stays separate
+   so the line-handler reading stdout doesn't get garbled by warnings."
+  ^Process [cmd cwd env]
+  (proc/spawn! {:cmd cmd :cwd cwd :env env :merge-err? false}))
 
-(defn- build-process-builder [cmd cwd]
-  (doto (ProcessBuilder. ^java.util.List cmd)
-    (.directory (io/file cwd))
-    (.redirectErrorStream false)))
+(defn- drain-stderr-async!
+  "Read proc's stderr in a background daemon thread and surface each line in
+   the chat as a :system message. Do NOT use timbre/println — those write to
+   stdout, which is the same stream JLine is drawing the TUI on, so the log
+   line would land directly on top of the rendered screen."
+  [^Process proc tag]
+  (let [thread
+        (Thread.
+         (fn []
+           (try
+             (with-open [reader (java.io.BufferedReader.
+                                  (java.io.InputStreamReader. (.getErrorStream proc)))]
+               (loop []
+                 (when-let [line (.readLine reader)]
+                   (try
+                     (st/append-chat! :system (str tag " stderr: " line))
+                     (a/>!! refresh-chan :refresh)
+                     (catch Throwable _))
+                   (recur))))
+             (catch Throwable _))))]
+    (.setDaemon thread true)
+    (.start thread)
+    thread))
 
 (defn- write-user-msg! [^Process proc msg]
   (with-open [writer (java.io.PrintWriter. (.getOutputStream proc) true)]
@@ -178,21 +227,27 @@
   [model provider system-prompt additional cwd scope user-msg]
   (let [sid       (conv/ensure-pi-session-id! scope)
         all-skill (vec (concat additional (skill-dirs)))
-        spec (pi-proc/spawn-pi {:model model :provider provider
-                                :system-prompt system-prompt
-                                :additional-dirs all-skill
-                                :session-id sid
-                                :cwd cwd})
-        pb   (build-process-builder (:cmd spec) cwd)
-        proc (start-process! pb nil)]
+        spec      (pi-proc/spawn-pi {:model model :provider provider
+                                     :system-prompt system-prompt
+                                     :additional-dirs all-skill
+                                     :session-id sid
+                                     :cwd cwd})
+        proc      (start-streaming-proc! (:cmd spec) cwd nil)]
+    (reset! running-proc-atom proc)
+    (drain-stderr-async! proc "pi")
     (try
       (write-user-msg! proc user-msg)
       (read-stream-lines! proc
         (fn [line]
           (when-let [ev (pi-proc/parse-event line)]
             (handle-pi-event ev))))
+      (let [rc (.waitFor proc)]
+        (when (not (zero? rc))
+          (st/append-chat! :system
+            (str "pi exited with code " rc " — see activity for stderr"))))
       (finally
-        (.destroyForcibly proc)))))
+        (.destroyForcibly proc)
+        (reset! running-proc-atom nil)))))
 
 (defn- spawn-claude-agent!
   "Spawn and monitor the claude subprocess. Returns nil on error, truthy on success."
@@ -206,16 +261,35 @@
                       (conj "--resume" (:claude-session-id prior)))
         {:keys [cmd env]} (llm/streaming-invocation
                             {:model model :provider provider :claude-args claude-args})
-        pb   (build-process-builder cmd cwd)
-        proc (start-process! pb env)
+        proc (start-streaming-proc! cmd cwd env)
         sid  (atom nil)]
-    (write-user-msg! proc user-msg)
-    (read-stream-lines! proc
-      (fn [line]
-        (when-let [ev (parse-event line)]
-          (handle-event ev sid))))
+    (reset! running-proc-atom proc)
+    (drain-stderr-async! proc "claude")
+    (try
+      (write-user-msg! proc user-msg)
+      (read-stream-lines! proc
+        (fn [line]
+          (when-let [ev (parse-event line)]
+            (handle-event ev sid))))
+      (let [rc (.waitFor proc)]
+        (when (not (zero? rc))
+          (st/append-chat! :system
+            (str "claude exited with code " rc " — see activity for stderr"))))
+      (finally
+        (reset! running-proc-atom nil)))
     (when-let [s @sid]
       (conv/record-claude-session! scope s))))
+
+(defn cancel-running-agent!
+  "Forcibly terminate the currently-spawned agent subprocess (if any) and
+   surface a system message. The spawn thread's finally block clears
+   :streaming? and running-proc-atom once the process exits."
+  []
+  (when-let [^Process proc @running-proc-atom]
+    (try (.destroyForcibly proc) (catch Throwable _))
+    (st/append-chat! :system "request cancelled")
+    (a/>!! refresh-chan :refresh)
+    true))
 
 (defn spawn-agent! [user-msg]
   (let [agent         (:agent @st/state :claude)
@@ -245,8 +319,41 @@
 
 (defn handle-refresh [_args ds]
   (try
-    (refresh-portfolio! ds)
-    (st/append-chat! :system "portfolio refreshed from DB")
+    (let [connected? (tui-ibkr/connected?)
+          ;; When connected, ALWAYS use the live handshake account, not state.
+          ;; Stale state could point at a paper account from a previous run.
+          acct (if connected?
+                 (or (ibkr/default-account) (:account-id @st/state))
+                 (or (:account-id @st/state) (default-account-id ds)))
+          ibkr-cfg (:ibkr-config @st/state)
+          mode (when ibkr-cfg (port->mode (:port ibkr-cfg)))]
+      (cond
+        (not acct)
+        (st/append-chat! :system
+          "no account id known — /connect to TWS first, or run `clojure -M:cli refresh-portfolio`")
+
+        connected?
+        (do (st/append-chat! :system
+              (str "refreshing portfolio for " acct
+                   "  (ib=" (:host ibkr-cfg) ":" (:port ibkr-cfg)
+                   "  mode=" (name (or mode :unknown)) ")"))
+            (a/thread
+              (try
+                (tui-ibkr/refresh-from-ibkr! ds acct)
+                (let [n (count (:positions @st/state))]
+                  (st/append-chat! :system
+                    (str "portfolio refreshed from IB — " n " positions  (account=" acct ")")))
+                (a/>!! refresh-chan :refresh)
+                (catch Throwable t
+                  (st/append-chat! :system (str "refresh failed: " (.getMessage t)))
+                  (a/>!! refresh-chan :refresh)))))
+
+        :else
+        (do (refresh-portfolio! ds)
+            (st/append-chat! :system
+              (str "TWS not connected — reloaded from DB ("
+                   (count (:positions @st/state)) " positions, account=" acct "). "
+                   "Use /connect to pull live.")))))
     (catch Throwable t
       (st/append-chat! :system (str "refresh failed: " (.getMessage t))))))
 
@@ -268,35 +375,98 @@
     (catch Throwable t
       (st/append-chat! :system (str "indicators reload failed: " (.getMessage t))))))
 
+(defn- set-provider-model!
+  "Apply [provider model] to state respecting agent semantics:
+   - For :claude agent, provider routes through llm/set-provider! which whitelists
+     the Anthropic-compat endpoints (claude/ollama/kimi/minimax).
+   - For :pi agent, pi has its own provider universe (moonshotai/openai/etc.) that
+     the claude-side whitelist doesn't know about — just record state and let
+     pi parse it at spawn time.
+   Persists to <config-root>/tui-prefs.edn so the next launch picks the same combo."
+  [provider model]
+  (let [agent (:agent @st/state :claude)]
+    (when (and (= :claude agent) provider)
+      (llm/set-provider! provider))
+    (when model (llm/set-model! model))
+    (swap! st/state
+           (fn [s]
+             (cond-> s
+               provider (assoc :provider provider)
+               model    (assoc :model model))))
+    (st/persist-tui-prefs!)))
+
+(defn- parse-provider-model
+  "Parse 'provider/model' or 'provider:model' or bare 'model'. Returns [prov mdl]
+   where prov may be nil (meaning 'no change to provider')."
+  [s]
+  (cond
+    (str/includes? s "/")
+    (let [[p m] (str/split s #"/" 2)] [(keyword p) m])
+    (str/includes? s ":")
+    (let [[p m] (str/split s #":" 2)] [(keyword p) m])
+    :else
+    [nil s]))
+
 (defn handle-model [args _ds]
-  (if-let [m (first args)]
-    (let [[provider model] (if (str/includes? m ":")
-                             (let [[p mm] (str/split m #":" 2)] [(keyword p) mm])
-                             [(:provider @st/state :claude) m])]
+  (if-let [model-arg (not-empty (str/join " " args))]
+    (let [[provider model] (parse-provider-model model-arg)]
       (try
-        (llm/set-provider! provider)
-        (llm/set-model! model)
-        (swap! st/state assoc :model model :provider provider)
-        (st/append-chat! :system (str "model set to " (name provider) ":" model))
+        (set-provider-model! provider model)
+        (st/append-chat! :system
+          (str "model set to "
+               (name (:provider @st/state :claude)) ":" (:model @st/state)
+               "  (agent: " (name (:agent @st/state :claude)) ")"))
         (catch Exception e
           (st/append-chat! :system (str "bad /model: " (.getMessage e))))))
     (st/append-chat! :system
-      (str "current: " (name (:provider @st/state :claude)) ":" (:model @st/state)
+      (str "provider: " (name (:provider @st/state :claude))
+           "  model: "  (:model @st/state)
            "  (agent: " (name (:agent @st/state :claude)) ")"))))
 
 (defn handle-agent [args _ds]
-  (if-let [a (first args)]
-    (try
-      (let [new-a (llm/set-agent! a)]
-        (swap! st/state assoc :agent new-a)
-        (st/append-chat! :system (str "agent set to " (name new-a))))
-      (catch Exception e
-        (st/append-chat! :system (str "bad /agent: " (.getMessage e)))))
-    (st/append-chat! :system
-      (str "current agent: " (name (:agent @st/state :claude))))))
+  (if-let [full-arg (not-empty (str/join " " args))]
+    (let [parts     (str/split full-arg #"\s+")
+          [a-str model-part] parts
+          agent-key (some-> a-str str/trim str/lower-case keyword)]
+      (when-not (contains? #{:claude :pi} agent-key)
+        (st/append-chat! :system (str "unknown agent: " a-str " — use /agent pi or /agent claude"))
+        (st/append-chat! :system
+          (str "agent: " (name (:agent @st/state :claude))
+               "  provider: " (name (:provider @st/state :claude))
+               "  model: " (:model @st/state))))
+      (when (contains? #{:claude :pi} agent-key)
+        (try
+          (llm/set-agent! agent-key)
+          (swap! st/state assoc :agent agent-key)
+          (st/persist-tui-prefs!)
+          (st/append-chat! :system (str "agent set to " (name agent-key)))
+          (catch Exception e
+            (st/append-chat! :system (str "bad /agent: " (.getMessage e)))))
+        (when (second parts)
+          (let [mp (second parts)
+                [prov mdl] (parse-provider-model mp)]
+            (try
+              (set-provider-model! prov mdl)
+              (st/append-chat! :system
+                (str "provider=" (name (:provider @st/state :claude))
+                     "  model="  (:model @st/state)))
+              (catch Exception e
+                (st/append-chat! :system
+                  (str "couldn't set model from " mp ": " (.getMessage e))))))))))
+  (st/append-chat! :system
+    (str "agent: " (name (:agent @st/state :claude))
+         "  provider: " (name (:provider @st/state :claude))
+         "  model: " (:model @st/state))))
 
 (defn handle-connect [_args ds]
-  (tui-ibkr/connect-async! {:host "127.0.0.1" :port 7497 :client-id 7 :ds ds}))
+  (if-let [cfg (:ibkr-config @st/state)]
+    (do
+      (st/append-chat! :system
+        (str "connecting → " (:host cfg) ":" (:port cfg)
+             " (" (name (port->mode (:port cfg))) ")"))
+      (tui-ibkr/connect-async! (assoc cfg :ds ds)))
+    (st/append-chat! :system
+      "no ibkr config in state — relaunch the TUI with --profile prod or :dev")))
 
 (defn handle-disconnect [_args _ds]
   (tui-ibkr/disconnect!))
@@ -353,6 +523,8 @@
    "/exit"                handle-quit
    "/q"                   handle-quit
    "/refresh"             handle-refresh
+   "/refresh-portfolio"   handle-refresh
+   "/refresh-positions"   handle-refresh
    "/reload-screens"      handle-reload-screens
    "/reload-indicators"   handle-reload-indicators
    "/connect"             handle-connect
@@ -412,8 +584,11 @@
       (get agent-routed cmd)
       (spawn-agent! ((get agent-routed cmd) args))
 
+      ;; Unknown slash → forward the whole line to the agent. Lets claude's
+      ;; built-in slash commands (and any sub-agent slash routing it knows
+      ;; about) handle anything we haven't enumerated here.
       :else
-      (st/append-chat! :system (str "unknown command: " cmd)))))
+      (spawn-agent! line))))
 
 (defn on-enter [state ds]
   (let [line (str/trim (:input state))]
@@ -453,6 +628,15 @@
 (defn on-end [state]
   (swap! st/state assoc :cursor (count (:input state))))
 
+(defn process-mouse
+  "Handle mouse events — currently scroll-wheel up/down to scroll the chat.
+   Works regardless of focus so you can scroll while typing."
+  [event]
+  (case (:wheel event)
+    :wheel-up   (st/adjust-scroll! -3)
+    :wheel-down (st/adjust-scroll! 3)
+    nil))
+
 (defn process-key [event]
   (let [state @st/state
         focus (:focus state)
@@ -462,6 +646,15 @@
       (and ctrl (= "c" k))
       (do (try (tui-ibkr/disconnect!) (catch Throwable _))
           (st/quit!))
+
+      ;; Esc cancels the in-flight agent request (any focus).
+      (= :escape k)
+      (cancel-running-agent!)
+
+      ;; PgUp/PgDn scroll the chat from ANY focus, not just chat focus —
+      ;; people in mid-conversation shouldn't have to Tab away to read.
+      (= :page-up k)   (st/adjust-scroll! (- @state-height))
+      (= :page-down k) (st/adjust-scroll! @state-height)
 
       ;; Tab toggles focus
       (= :tab k)
@@ -548,11 +741,24 @@
 
 (defn- init-tui-state!
   "Initialize state atom and run any startup refresh."
-  [{:keys [ds account-id ibkr-config initial-message]}]
+  [{:keys [ds account-id ibkr-config profile initial-message]}]
   (st/reset-state!)
+  (st/load-input-history!)
+  (st/load-tui-prefs!)
+  ;; Sync the loaded agent/provider/model into llm's atoms so the first spawn
+  ;; reads the persisted choice — state.clj loads into the state atom, but the
+  ;; spawn paths also consult llm/active-* atoms for defaults.
+  (let [{:keys [agent provider model]} @st/state]
+    (try (when agent    (llm/set-agent!    agent))    (catch Throwable _))
+    (try (when (and provider (= :claude agent))
+           (llm/set-provider! provider))              (catch Throwable _))
+    (try (when model    (llm/set-model!    model))    (catch Throwable _)))
   (reset! ds-atom ds)
+  (swap! st/state assoc :profile profile :ibkr-config ibkr-config)
   (when account-id (swap! st/state assoc :account-id account-id))
   (when initial-message (st/append-chat! :system initial-message))
+  (when ibkr-config
+    (st/append-chat! :system (mode-banner profile ibkr-config)))
   (when ds
     (try (refresh-portfolio! ds)
          (catch Throwable t
@@ -566,7 +772,22 @@
   (when (and ds ibkr-config)
     (tui-ibkr/connect-async! (assoc ibkr-config :ds ds))))
 
+(defn- silence-stdout-logging!
+  "TUI safety: redirect timbre's :println appender to a file and detach *out*
+   from the terminal. Otherwise stray log lines (or println) land directly on
+   the JLine-drawn screen — typically right where the input field is."
+  []
+  (try
+    (let [log-file "cache/logs/options-trader.log"]
+      (io/make-parents log-file)
+      ;; Drop default println appender; keep spit appender to file.
+      (log/merge-config!
+        {:appenders {:println {:enabled? false}
+                     :spit (log-appenders/spit-appender {:fname log-file})}}))
+    (catch Throwable _)))
+
 (defn- init-terminal []
+  (silence-stdout-logging!)
   (let [terminal     (term/create-terminal)
         original     (term/enter-raw-mode terminal)
         {:keys [width height]} (term/get-size terminal)
@@ -575,6 +796,9 @@
                                              :alt-screen true
                                              :hide-cursor false)
         keymap       (km/create-keymap terminal)]
+    ;; Tell the terminal to send wheel/click events so process-mouse fires.
+    ;; Without this charm receives no mouse events at all → scrolling is dead.
+    (render/enable-mouse! renderer :normal)
     (reset! state-width width)
     (reset! state-height height)
     {:terminal terminal :original-attrs original
@@ -609,8 +833,10 @@
               (do-render! renderer))
             (when (= ch input-chan)
               (when v
-                (when (= :key (:type v))
-                  (process-key v))
+                (case (:type v)
+                  :key   (process-key v)
+                  :mouse (process-mouse v)
+                  nil)
                 (do-render! renderer))))
           (recur)))
       @st/state
@@ -627,7 +853,7 @@
 
 (defn start!
   ([] (start! {}))
-  ([{:keys [ds account-id ibkr-config initial-message] :as config}]
+  ([{:keys [ds account-id ibkr-config profile initial-message] :as config}]
    (init-tui-state! config)
    (let [{:keys [^Terminal terminal original-attrs renderer keymap]
           :as _tenv}     (init-terminal)

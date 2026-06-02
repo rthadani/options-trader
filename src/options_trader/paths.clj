@@ -90,6 +90,18 @@
   []
   (str (config-root) "/indicators.edn"))
 
+(defn input-history-file
+  "TUI input history persisted as an EDN vector of strings — restored on
+   startup so ↑/↓ recall survives restarts. Capped to a sliding window."
+  []
+  (str (config-root) "/input-history.edn"))
+
+(defn tui-prefs-file
+  "TUI preferences (agent / model / provider) persisted as EDN so the next
+   TUI launch starts in the same configuration as the previous session."
+  []
+  (str (config-root) "/tui-prefs.edn"))
+
 (defn ensure-dir!
   "Create path (and parents) if missing. Returns the absolute path."
   [^String path]

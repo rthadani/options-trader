@@ -35,14 +35,17 @@
    :main-opts   ["-m" "kaocha.runner"]}
 
   :run
-  {:main-opts ["-m" "options-trader.core"]}
+  {:jvm-opts  ["-Xmx4g"]
+   :main-opts ["-m" "options-trader.core"]}
 
   :uberjar
   {:deps       {io.github.clojure/tools.build {:mvn/version "0.10.3"}}
    :ns-default build}
 
   :mcp-server
-  {:main-opts ["-m" "options-trader.mcp.server"]}
+  {:jvm-opts  ["-Xmx2g"]
+   :main-opts ["-m" "options-trader.mcp.server"]}
 
   :cli
-  {:main-opts ["-m" "options-trader.cli"]}}}
+  {:jvm-opts  ["-Xmx4g"]
+   :main-opts ["-m" "options-trader.cli"]}}}

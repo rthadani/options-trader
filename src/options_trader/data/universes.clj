@@ -28,18 +28,24 @@
 (defn extract-tickers
   "Extract ticker symbols from an HTML source.
    src may be a String of HTML or a java.io.Reader.
-   col-idx (0-based) selects which <td> column holds the symbol."
+   col-idx (0-based) selects which <td> column holds the symbol.
+
+   Only the FIRST .wikitable on the page is scanned. Wikipedia's index-list
+   pages (e.g. List_of_S%26P_500_companies) carry a second .wikitable with
+   'Selected changes' — its column 0 is a date, not a ticker; including it
+   produced rows like 'March 23, 2026' alongside real tickers."
   ([src] (extract-tickers src 0))
   ([src col-idx]
-   (let [reader   (if (instance? java.io.Reader src)
-                    src
-                    (java.io.StringReader. src))
-         resource (html/html-resource reader)
-         rows     (html/select resource [:table.wikitable :tbody :tr])
-         tickers  (for [row rows
-                        :let [cells (html/select row [:td])]
-                        :when (>= (count cells) (inc col-idx))]
-                    (-> cells (nth col-idx) html/text str/trim))]
+   (let [reader     (if (instance? java.io.Reader src)
+                      src
+                      (java.io.StringReader. src))
+         resource   (html/html-resource reader)
+         first-tbl  (first (html/select resource [:table.wikitable]))
+         rows       (when first-tbl (html/select first-tbl [:tbody :tr]))
+         tickers    (for [row rows
+                          :let [cells (html/select row [:td])]
+                          :when (>= (count cells) (inc col-idx))]
+                      (-> cells (nth col-idx) html/text str/trim))]
      (vec (remove str/blank? tickers)))))
 
 (def parse-tickers

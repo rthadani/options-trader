@@ -49,12 +49,34 @@
                              (io/file target-dir rel)))
       names)))
 
+(defn- link-claude-credentials!
+  "Symlink the user's existing claude credentials into runtime-claude so the
+   spawned agent inherits the Pro/Max plan login. Without this, every spawn
+   prompts /login because CLAUDE_CONFIG_DIR points away from ~/.claude.
+
+   Uses a symlink (not a copy) so token refreshes performed by the user's
+   own `claude` CLI propagate automatically. Skips silently if the user
+   isn't logged in yet (no ~/.claude/.credentials.json) — the user can
+   run /login in their own claude shell once, then restart the TUI."
+  [runtime-dir]
+  (let [src (io/file (System/getProperty "user.home") ".claude" ".credentials.json")
+        dst (io/file runtime-dir ".credentials.json")]
+    (when (and (.exists src) (not (.exists dst)))
+      (try
+        (java.nio.file.Files/createSymbolicLink
+          (.toPath dst) (.toPath src)
+          (make-array java.nio.file.attribute.FileAttribute 0))
+        (catch Throwable _
+          (try (io/copy src dst) (catch Throwable _ nil)))))
+    dst))
+
 (defn- seed-runtime-claude!
   "Seed the TUI's claude config dir from packaged resources, so the agent
    gets an isolated, opinionated starting point on first run:
    - settings.json     — MCP server + permission allowlist
    - agents/*.md       — sub-agent definitions (see manifest)
    - skills/*/SKILL.md — skill definitions (see manifest)
+   - .credentials.json — symlinked from ~/.claude so Pro/Max login carries over
    The user-overlay CLAUDE.md (separate concern) lives at config-root, not
    inside runtime-claude — see seed-overlay-md!."
   []
@@ -69,6 +91,7 @@
     (seed-manifest! "runtime/claude/skills"
                     (io/file (paths/runtime-claude-skills-dir))
                     #(str % "/SKILL.md"))
+    (link-claude-credentials! dir)
     dir))
 
 (defn- seed-overlay-md!
@@ -182,5 +205,6 @@
           (System/exit 1)))
       (let [ds (db/datasource cfg)]
         (tui/start! {:ds              ds
+                     :profile         (:profile options)
                      :ibkr-config     (assoc (:ibkr cfg) :client-id tui-client-id)
                      :initial-message "Welcome to Options Trader. Type /help for commands, /quit to exit."})))))

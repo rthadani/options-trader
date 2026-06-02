@@ -1,6 +1,7 @@
 (ns options-trader.tui.claude-proc
-  (:require [cheshire.core   :as json]
-            [clojure.string  :as str]))
+  (:require [cheshire.core         :as json]
+            [clojure.string        :as str]
+            [options-trader.tui.proc :as proc]))
 
 (def ^:private default-model "claude-opus-4-5")
 
@@ -65,19 +66,7 @@
              :cache-creation-input-tokens (or (:cache_creation_input_tokens u) 0)})))
 
 (defn make-process-spawn-fn
-  "Return a real spawn-fn that invokes the claude CLI via ProcessBuilder."
+  "Return a real spawn-fn that invokes the claude CLI via ProcessBuilder.
+   Synchronous: writes input on stdin, slurps stdout, returns {:stdout :exit}."
   []
-  (fn [{:keys [cmd env cwd input]}]
-    (let [pb  (ProcessBuilder. ^java.util.List cmd)
-          _   (.directory pb (java.io.File. ^String cwd))
-          env-map (.environment pb)]
-      (doseq [[k v] env]
-        (.put env-map k v))
-      (.redirectErrorStream pb true)
-      (let [proc   (.start pb)
-            writer (java.io.PrintWriter. (.getOutputStream proc) true)]
-        (.println writer input)
-        (.close writer)
-        (let [out (slurp (.getInputStream proc))
-              rc  (.waitFor proc)]
-          {:stdout out :exit rc})))))
+  proc/one-shot!)

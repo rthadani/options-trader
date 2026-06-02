@@ -1,6 +1,14 @@
 (ns options-trader.tui.state
   "Single source of truth for the TUI's mutable state. Render is a pure
-   function of this atom plus the terminal dimensions.")
+   function of this atom plus the terminal dimensions."
+  (:require [clojure.edn     :as edn]
+            [clojure.java.io :as io]
+            [options-trader.paths :as paths]))
+
+(def ^:const max-input-history
+  "Cap the persisted history to a sliding window so the file can't grow
+   unbounded over months of use. Oldest entries drop off the front."
+  500)
 
 (def initial-state
   {:positions        []
@@ -22,7 +30,9 @@
    :focus            :input
    :additional-dirs  []
    :input-history    []
-   :history-idx      nil})
+   :history-idx      nil
+   :profile          nil
+   :ibkr-config      nil})
 
 (defonce state (atom initial-state))
 
@@ -91,24 +101,91 @@
 (defn toggle-focus! []
   (swap! state update :focus #(if (= :input %) :chat :input)))
 
-(defn push-input-history! [text]
+(defn persist-input-history!
+  "Write the current history vector to <config-root>/input-history.edn.
+   Best-effort — a failed write is logged-and-swallowed so a read-only
+   config dir doesn't kill the TUI mid-session."
+  []
+  (let [path (paths/input-history-file)
+        hist (:input-history @state)]
+    (try
+      (io/make-parents path)
+      (spit path (pr-str hist))
+      (catch Exception _ nil))))
+
+(defn load-input-history!
+  "Restore the input-history vector from disk on TUI startup. Missing or
+   malformed file → start empty, no crash."
+  []
+  (let [path (paths/input-history-file)]
+    (try
+      (when (.exists (io/file path))
+        (let [hist (edn/read-string (slurp path))]
+          (when (vector? hist)
+            (swap! state assoc :input-history hist :history-idx nil))))
+      (catch Exception _ nil))))
+
+(defn persist-tui-prefs!
+  "Write current agent/model/provider to <config-root>/tui-prefs.edn so the
+   next TUI launch resumes in the same configuration."
+  []
+  (let [path (paths/tui-prefs-file)
+        s    @state
+        prefs {:agent    (:agent s)
+               :model    (:model s)
+               :provider (:provider s)}]
+    (try
+      (io/make-parents path)
+      (spit path (pr-str prefs))
+      (catch Exception _ nil))))
+
+(defn load-tui-prefs!
+  "Restore agent/model/provider from disk on TUI startup. Missing or
+   malformed file → keep initial defaults."
+  []
+  (let [path (paths/tui-prefs-file)]
+    (try
+      (when (.exists (io/file path))
+        (let [prefs (edn/read-string (slurp path))]
+          (when (map? prefs)
+            (swap! state merge
+                   (cond-> {}
+                     (:agent    prefs) (assoc :agent    (:agent prefs))
+                     (:model    prefs) (assoc :model    (:model prefs))
+                     (:provider prefs) (assoc :provider (:provider prefs)))))))
+      (catch Exception _ nil))))
+
+(defn push-input-history!
+  "Append text to history, drop duplicates of the immediately-prior entry,
+   trim to max-input-history, reset the recall cursor, and persist."
+  [text]
   (swap! state (fn [s]
-                 (-> s
-                     (update :input-history conj text)
-                     (assoc :history-idx nil)))))
+                 (let [hist  (:input-history s)
+                       last' (peek hist)
+                       hist' (if (= text last')
+                               hist
+                               (conj hist text))
+                       hist' (if (> (count hist') max-input-history)
+                               (subvec hist' (- (count hist') max-input-history))
+                               hist')]
+                   (-> s
+                       (assoc :input-history hist')
+                       (assoc :history-idx nil)))))
+  (persist-input-history!))
 
 (defn set-scroll-offset! [n messages chat-h]
   (swap! state assoc :scroll-offset
          (max 0 (min n (max 0 (- (count messages) chat-h))))))
 
-(defn adjust-scroll! [delta]
-  (swap! state (fn [s]
-                 (let [chat-h 80  ;; approximate, gets corrected on render
-                       total   (count (:messages s))
-                       current (:scroll-offset s 0)
-                       new     (+ current delta)
-                       capped  (max 0 (min new (max 0 (- total 10))))]
-                   (assoc s :scroll-offset capped)))))
+(defn adjust-scroll!
+  "Bump the scroll offset by `delta` (positive = scroll back in history,
+   negative = scroll toward newest). Lower bound clamped to 0 here; the
+   upper bound is enforced in render where the wrapped line count is known.
+   Pre-clamping by (count messages) used to silently swallow scroll attempts
+   when a single long response wrapped into many visible lines."
+  [delta]
+  (swap! state update :scroll-offset
+         (fn [cur] (max 0 (+ (or cur 0) delta)))))
 
 (defn recall-prev! []
   (swap! state (fn [s]

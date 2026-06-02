@@ -1,7 +1,25 @@
 (ns options-trader.tui.runtime-context-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [clojure.java.io :as io]
             [clojure.string :as str]
+            [options-trader.paths :as paths]
             [options-trader.tui.runtime-context :as rc]))
+
+(defn- isolate-config-root
+  "Bind paths/*config-root-override* to a fresh temp dir per test so
+   load-user-overlay can't pick up the developer's real ~/.config/options-trader/
+   CLAUDE.md and make 'no overlay' tests flaky."
+  [t]
+  (let [tmp (str (System/getProperty "java.io.tmpdir")
+                 "/options-trader-rc-test-" (System/nanoTime))]
+    (.mkdirs (io/file tmp))
+    (binding [paths/*config-root-override* tmp]
+      (try (t)
+           (finally
+             (doseq [f (reverse (file-seq (io/file tmp)))]
+               (.delete f)))))))
+
+(use-fixtures :each isolate-config-root)
 
 (deftest build-base-and-dynamic-markers-present
   (let [result (rc/build {:dynamic-block "spawn info here"})]

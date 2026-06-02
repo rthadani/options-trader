@@ -6,6 +6,7 @@
             [clojure.string :as str]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
+            [options-trader.data.fundamentals :as fundamentals]
             [options-trader.indicators.beta :as beta]
             [options-trader.indicators.composites :as composites]
             [options-trader.indicators.earnings-views :as earnings-views]
@@ -362,7 +363,12 @@
   (composites/refresh-composites! ds))
 
 (defn refresh-fundamentals!
-  "Fetch fundamentals from SEC EDGAR for every symbol in bars_daily and
-   persist + upsert ratio columns. Slow — daily-cadence job."
-  [ds]
-  (fundamentals-views/refresh-fundamentals-views! ds))
+  "Fetch fundamentals from SEC EDGAR and persist + upsert ratio columns.
+   Slow — daily-cadence job. With opts {:symbols [...]} scope to the given
+   tickers; otherwise walks every symbol in bars_daily."
+  ([ds] (refresh-fundamentals! ds {}))
+  ([ds opts]
+   (fundamentals-views/refresh-fundamentals-views!
+     ds
+     (fundamentals/make-source {:type :edgar})
+     opts)))

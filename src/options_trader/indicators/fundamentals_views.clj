@@ -113,34 +113,53 @@
 ;;; ── Public entry point ──────────────────────────────────────────────────────
 
 (defn refresh-fundamentals-views!
-  "Fetch fundamentals for every symbol in bars_daily via the EDGAR source,
-   persist the canonical payload to the fundamentals table, and upsert
-   computed ratio columns onto latest_indicators.
+  "Fetch fundamentals for symbols via the EDGAR source, persist the canonical
+   payload to the fundamentals table, and upsert computed ratio columns onto
+   latest_indicators.
+
+   With no :symbols opt, walks every distinct symbol in bars_daily. Pass
+   :symbols [\"XEL\" \"XYL\" ...] to scope the run — useful for retrying a
+   partial failure or smoke-testing a single ticker.
 
    Slow path: ~1 request per symbol (edgarjure rate-limits to ~10 req/sec
    internally). Intended for daily-cadence refresh. Symbols not in EDGAR
    are logged and skipped."
   ([ds]
-   (refresh-fundamentals-views! ds (fund/make-source {:type :edgar})))
+   (refresh-fundamentals-views! ds (fund/make-source {:type :edgar}) {}))
   ([ds source]
+   (refresh-fundamentals-views! ds source {}))
+  ([ds source {:keys [symbols]}]
    (ensure-schema! ds)
-   (doseq [sym (all-symbols ds)]
-     (try
-       (let [p   (promise)
-             _   (fund/fetch-fundamentals sym {} source
-                   (fn [evs] (deliver p evs)))
-             evs (deref p 30000 nil)
-             raw (first evs)]
-         (cond
-           (or (nil? raw) (= :error (:type raw)))
-           (log/debugf "fundamentals: skip %s (%s)" sym (:message raw))
+   (let [syms    (or (seq symbols) (all-symbols ds))
+         total   (count syms)
+         ok      (atom 0)
+         skipped (atom 0)
+         failed  (atom 0)]
+     (log/infof "fundamentals: processing %d symbols" total)
+     (doseq [[i sym] (map-indexed vector syms)]
+       (try
+         (let [p   (promise)
+               _   (fund/fetch-fundamentals sym {} source
+                     (fn [evs] (deliver p evs)))
+               evs (deref p 30000 nil)
+               raw (first evs)]
+           (cond
+             (or (nil? raw) (= :error (:type raw)))
+             (do (log/infof "fundamentals [%d/%d] %s skipped (%s)"
+                            (inc i) total sym (:message raw))
+                 (swap! skipped inc))
 
-           :else
-           (let [norm  (fund/normalise-fundamentals raw source)
-                 close (latest-close ds sym)
-                 rs    (ratios norm close)]
-             (persist-fundamentals! ds sym (str (:as-of norm)) norm)
-             (upsert-row! ds sym rs)
-             (log/debugf "fundamentals: %s as-of %s" sym (:as-of norm)))))
-       (catch Throwable t
-         (log/warnf t "fundamentals: failed for %s" sym))))))
+             :else
+             (let [norm  (fund/normalise-fundamentals raw source)
+                   close (latest-close ds sym)
+                   rs    (ratios norm close)]
+               (persist-fundamentals! ds sym (str (:as-of norm)) norm)
+               (upsert-row! ds sym rs)
+               (log/infof "fundamentals [%d/%d] %s ok (as-of %s)"
+                          (inc i) total sym (:as-of norm))
+               (swap! ok inc))))
+         (catch Throwable t
+           (log/warnf "fundamentals [%d/%d] %s failed: %s"
+                      (inc i) total sym (.getMessage t))
+           (swap! failed inc))))
+     {:total total :ok @ok :skipped @skipped :failed @failed})))

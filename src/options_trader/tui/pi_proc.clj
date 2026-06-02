@@ -2,16 +2,23 @@
   "Pi agent subprocess handling. Mirrors claude-proc but targets the pi CLI
    (`pi -p --mode json`) instead of claude.
 
-   The TUI spawns pi with full isolation from the host's ~/.pi config:
-     --no-skills --no-extensions   skip user-level skills/extensions
-     --session-dir <path>          per-product session storage
-     --mcp-config <path>           load only options-trader's MCP server
-   Only the explicit --skill <path> and --extension <path> flags load
-   anything else."
-  (:require [cheshire.core   :as json]
-            [clojure.java.io :as io]
-            [clojure.string  :as str]
-            [options-trader.paths :as paths]))
+   Pi is invoked with its defaults — user-level skills and extensions load
+   normally — plus a few options-trader-specific overrides:
+     --session-dir <path> per-product session storage so per-scope chat
+                          resume doesn't collide with the user's other pi work
+     --mcp-config <path>  load options-trader's MCP server (handled by pi's
+                          built-in mcp-bridge extension)
+     --skill <path>       each options-trader skill, added on top of any
+                          user-level skills the pi defaults already load
+
+   We do NOT pass --no-extensions (would disable mcp-bridge → pi rejects
+   --mcp-config) or --no-skills (no upside; explicit --skill paths layer on
+   regardless)."
+  (:require [cheshire.core         :as json]
+            [clojure.java.io       :as io]
+            [clojure.string        :as str]
+            [options-trader.paths  :as paths]
+            [options-trader.tui.proc :as proc]))
 
 (defn spawn-pi
   "Return a spawn-params map {:cmd :env :cwd} for the pi CLI.
@@ -33,7 +40,6 @@
         mcp-file    (paths/pi-mcp-file)
         mcp?        (.exists (io/file mcp-file))]
     {:cmd (cond-> ["pi" "-p" "--mode" "json"
-                   "--no-skills" "--no-extensions"
                    "--session-dir" session-dir]
             session-id    (conj "--session-id" session-id)
             mcp?          (conj "--mcp-config" mcp-file)
@@ -111,19 +117,6 @@
 
 (defn make-process-spawn-fn
   "Return a real spawn-fn that invokes the pi CLI via ProcessBuilder.
-   Consumes {:cmd :env :cwd :input}, returns {:stdout :exit}."
+   Synchronous: writes input on stdin, slurps stdout, returns {:stdout :exit}."
   []
-  (fn [{:keys [cmd env cwd input]}]
-    (let [pb  (ProcessBuilder. ^java.util.List cmd)
-          _   (.directory pb (java.io.File. ^String cwd))
-          env-map (.environment pb)]
-      (doseq [[k v] env]
-        (.put env-map k v))
-      (.redirectErrorStream pb true)
-      (let [proc   (.start pb)
-            writer (java.io.PrintWriter. (.getOutputStream proc) true)]
-        (.println writer input)
-        (.close writer)
-        (let [out (slurp (.getInputStream proc))
-              rc  (.waitFor proc)]
-          {:stdout out :exit rc})))))
+  proc/one-shot!)

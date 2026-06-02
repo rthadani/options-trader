@@ -17,6 +17,14 @@
   [s]
   (str/replace (or s "") #"^\{[^}]+\}" ""))
 
+(defn extract-k-score
+  "Parse the K: field out of an IB headline metadata block — that's the
+   provider's own sentiment score in the range [-1.0, +1.0]. Returns a double
+   when present, else nil. The pattern allows an optional sign and decimal."
+  [^String headline]
+  (when-let [m (re-find #"^\{[^}]*K:(-?\d+(?:\.\d+)?)" (or headline ""))]
+    (Double/parseDouble (second m))))
+
 (defn- score-text
   "Sum signed lexicon hits over tokens in `text`. Returns 0.0 on no hits."
   [text]
@@ -24,8 +32,18 @@
         hits  (keep @lexicon words)]
     (if (empty? hits) 0.0 (double (reduce + hits)))))
 
-(defn- classify [score]
-  (cond (> score 0.2)  :bullish
+(defn score-headline
+  "Score a raw IB headline. Prefers the provider's own K: score from the
+   metadata block; falls back to the lexicon scoring of the stripped text."
+  [^String headline]
+  (or (extract-k-score headline)
+      (score-text (strip-ib-meta headline))))
+
+(defn classify
+  "Map a score in roughly [-1,+1] to a sentiment keyword."
+  [score]
+  (cond (nil? score)   :neutral
+        (> score 0.2)  :bullish
         (< score -0.2) :bearish
         :else          :neutral))
 
@@ -109,8 +127,9 @@
         (empty? evs)            {:symbol symbol :count 0 :score 0.0 :sentiment :neutral :samples []}
         :else
         (let [scored  (mapv (fn [e]
-                              (let [text (strip-ib-meta (:headline e))
-                                    s    (score-text text)]
+                              (let [raw  (:headline e)
+                                    text (strip-ib-meta raw)
+                                    s    (score-headline raw)]
                                 {:headline text :time (:time e)
                                  :provider (:provider-code e) :score s}))
                             evs)

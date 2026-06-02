@@ -157,8 +157,9 @@
     (let [r (refresh/refresh-bars-daily!
               {:conn :stub :ds *ds* :symbols ["AAPL" "MSFT"]
                :timeout-ms 1000 :compute-indicators? false})]
-      (is (= 1 (:symbols-ok r))  "MSFT succeeded")
-      (is (= 1 (:symbols-err r)) "AAPL failed but didn't crash the batch"))))
+      (is (= 1 (:symbols-ok r))    "MSFT succeeded")
+      (is (= 1 (:unavailable r))   "AAPL was marked unavailable but didn't crash the batch")
+      (is (= 0 (:symbols-err r))   "no thrown exceptions"))))
 
 (deftest refresh-bars-daily-next-run-recovers-failed-symbol
   (testing "if a symbol fails on run 1, run 2's incremental fetch still has nil last-date → still backfills"
