@@ -164,23 +164,34 @@
         (write-positions! store account-id priced)
         priced)))
   (account-summary [_]
-    (let [tags  (atom {})
-          p     (promise)
-          store (->JdbcStore ds)]
-      (ibkr/req-account-summary
-        ib-client
-        "NetLiquidation,TotalCashValue,BuyingPower"
-        (fn [row]
-          (if (nil? row)
-            (let [summary {:net-liq      (get @tags "NetLiquidation")
-                           :cash         (get @tags "TotalCashValue")
-                           :buying-power (get @tags "BuyingPower")
-                           :day-pl       nil}]
-              (write-account-summary! store account-id summary)
-              (deliver p summary))
-            (when-let [tag (:tag row)]
-              (swap! tags assoc tag (some-> (:value row) parse-double))))))
-      (deref p 10000 nil)))
+    (let [tags    (atom {})
+          p       (promise)
+          rid-box (atom nil)
+          store   (->JdbcStore ds)
+          rid     (ibkr/req-account-summary
+                    ib-client
+                    "NetLiquidation,TotalCashValue,BuyingPower"
+                    (fn [row]
+                      (if (nil? row)
+                        (let [summary {:net-liq      (get @tags "NetLiquidation")
+                                       :cash         (get @tags "TotalCashValue")
+                                       :buying-power (get @tags "BuyingPower")
+                                       :day-pl       nil}]
+                          (write-account-summary! store account-id summary)
+                          ;; ALWAYS cancel — reqAccountSummary is a stream
+                          ;; and TWS caps simultaneous subscriptions at ~3.
+                          ;; Skipping this caused error 322 across reconnects.
+                          (when-let [r @rid-box]
+                            (try (ibkr/cancel-sub! ib-client r) (catch Throwable _)))
+                          (deliver p summary))
+                        (when-let [tag (:tag row)]
+                          (swap! tags assoc tag (some-> (:value row) parse-double))))))]
+      (reset! rid-box rid)
+      (let [result (deref p 10000 nil)]
+        ;; Safety net: if we timed out without a terminal event, still cancel.
+        (when (nil? result)
+          (try (ibkr/cancel-sub! ib-client rid) (catch Throwable _)))
+        result)))
   (realized-pnl [_ _ _]
     (throw (UnsupportedOperationException. "realized-pnl: not implemented for IbkrSource"))))
 

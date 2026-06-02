@@ -14,7 +14,9 @@
   ;; connections at the same time; IB rejects a second client that reuses an
   ;; in-use client id. Keep the TUI on its own id, distinct from the CLI's
   ;; (config :ibkr :client-id, default 1).
-  7)
+  ;;
+  ;; Override with TUI_CLIENT_ID=<n> if 7 collides with another tool you run.
+  (or (some-> (System/getenv "TUI_CLIENT_ID") not-empty parse-long) 7))
 
 (def cli-options
   [[nil  "--headless"        "Run without TUI"]

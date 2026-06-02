@@ -1,4 +1,5 @@
-{:dev  {:db    {:path "cache/options_trader.duckdb"}
+{:dev  {:db    {:path #or [#env OPTIONS_TRADER_DB_PATH
+                            "cache/options_trader.duckdb"]}
         :ibkr  {:host "127.0.0.1" :port 7497 :client-id 1}
         :log   {:level :debug}
         :data-sources
@@ -10,7 +11,11 @@
                  :user-agent #or [#env EDGAR_USER_AGENT
                                   "options-trader you@example.com"]}}}
 
- :prod {:db    {:path "/data/options-trader.duckdb"}
+ ;; :prod differs from :dev ONLY in the IB port (7496 = live TWS). DB path
+ ;; defaults to the same local file; set OPTIONS_TRADER_DB_PATH to override
+ ;; for server deploys.
+ :prod {:db    {:path #or [#env OPTIONS_TRADER_DB_PATH
+                            "cache/options_trader.duckdb"]}
         :ibkr  {:host "127.0.0.1" :port 7496 :client-id 1}
         :log   {:level :info}
         :data-sources

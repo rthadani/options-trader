@@ -45,6 +45,11 @@
 ;; the id we registered the cb under and map those events back to it.
 (defonce ^:private positions-rid (atom nil))
 
+;; reqAccountUpdates is single-subscription per session and also rid-less. Its
+;; :update-portfolio, :update-account-value, :update-account-time, and
+;; :account-download-end events route via the same id-as-fallback trick.
+(defonce ^:private account-updates-rid (atom nil))
+
 ;;; ── Parsers ─────────────────────────────────────────────────────────────────
 
 (defn ->contract
@@ -163,6 +168,41 @@
      :market-value   nil
      :unrealized-pnl nil}))
 
+(defn- pick
+  "Try several possible key spellings (ib-re-actor's auto-conversion is
+   usually kebab-case but isn't always — defensive against minor binding drift)."
+  [m & ks]
+  (some (fn [k] (when-let [v (get m k)] v)) ks))
+
+(defn- project-update-portfolio
+  "Normalise a reqAccountUpdates :update-portfolio event. Unlike :position
+   events, these carry live :market-price/:market-value/:unrealized-pnl that
+   tick continuously as the underlying moves — that's the streaming part."
+  [event]
+  (let [^com.ib.client.Contract c (:contract event)
+        opt? (= "OPT" (str (.secType c)))
+        qty  (let [p (or (:position event) (:pos event))]
+               (cond
+                 (instance? com.ib.client.Decimal p) (.longValue ^com.ib.client.Decimal p)
+                 (number? p)                         (long p)
+                 :else                               0))]
+    {:type           :update-portfolio
+     :account        (pick event :account-name :account)
+     :conid          (.conid c)
+     :symbol         (.symbol c)
+     :opt-right      (case (str (.right c)) "Call" "C" "Put" "P" "")
+     :expiry         (if opt?
+                       (or (ib-expiry->local-date (.lastTradeDateOrContractMonth c))
+                           epoch-expiry)
+                       epoch-expiry)
+     :strike         (.strike c)
+     :qty            qty
+     :avg-cost       (pick event :average-cost :avg-cost)
+     :market-price   (pick event :market-price :marketPrice)
+     :market-value   (pick event :market-value :marketValue)
+     :unrealized-pnl (pick event :unrealized-pnl :unrealizedPNL :unrealised-pnl)
+     :realized-pnl   (pick event :realized-pnl   :realizedPNL   :realised-pnl)}))
+
 (defn- project
   "Convert per-event java payloads (Bar, ContractDetails, …) to Clojure maps.
    For ContractDetails the nested Contract is also unwrapped so callers see
@@ -181,6 +221,9 @@
 
     :position
     (project-position event)
+
+    :update-portfolio
+    (project-update-portfolio event)
 
     event))
 
@@ -236,7 +279,12 @@
           rid       (or (:req-id event) (:request-id event)
                         (:id event) (:ticker-id event) (:order-id event)
                         (when (or (= t :position) (= t :position-end))
-                          @positions-rid))
+                          @positions-rid)
+                        (when (contains?
+                                #{:update-portfolio :update-account-value
+                                  :update-account-time :account-download-end}
+                                t)
+                          @account-updates-rid))
           terminal? (contains? terminal-event-types t)
           entry     (when rid (get @pending rid))]
       (when (= t :managed-accounts) (capture-managed-accounts! event))
@@ -256,10 +304,18 @@
             :stream (try (cb warn) (catch Throwable _)))
           (log/debugf "ibkr warning code=%s msg=%s" (:code event) (:message event)))
 
+        ;; Stream subscriptions should survive most errors — a stray TWS
+        ;; error tagged with our rid used to dissoc the pending entry, which
+        ;; killed the stream silently. Now: deliver the error to the cb as a
+        ;; :warning event and KEEP the entry. Batch requests still terminate.
+        (and entry (= t :error) (= :stream (:mode entry)))
+        (let [warn {:type :warning :code (:code event) :message (:message event)}]
+          (try ((:cb entry) warn) (catch Throwable _))
+          (log/debugf "ibkr stream warning code=%s msg=%s preserved subscription"
+                      (:code event) (:message event)))
+
         (and entry (= t :error))
         (do
-          (when (= :stream (:mode entry))
-            (try ((:cb entry) event) (catch Throwable _)))
           (swap! pending assoc-in [rid :events]
                  [{:type :error :code (:code event) :message (:message event)}])
           (complete-pending! rid))
@@ -430,12 +486,29 @@
   (swap! acc assoc :data-mode
          (get market-data-type-codes market-data-type :unknown)))
 
+(defn- handle-tick-string
+  "tickString delivers a few comma-separated payloads. The one we care about
+   is field 48 = RT_VOLUME → 'Last;LastSize;Time;TotalVolume;VWAP;SingleFlag'.
+   Generic tick 233 must be requested for these to arrive."
+  [acc {:keys [field value]}]
+  (case (long (or field 0))
+    48 (let [parts (str/split (str value) #";")
+             [last-px _last-sz _t total-vol vwap _flag] parts
+             num   #(try (Double/parseDouble %) (catch Throwable _ nil))]
+         (swap! acc (fn [m]
+                      (cond-> m
+                        (some-> last-px num)   (assoc :rt-last   (num last-px))
+                        (some-> total-vol num) (assoc :rt-volume (num total-vol))
+                        (some-> vwap num)      (assoc :vwap      (num vwap))))))
+    nil))
+
 (defn- handle-warning [acc {:keys [code message]}]
   (swap! acc update :warnings conj {:code code :message message}))
 
 (def ^:private snapshot-event-handlers
   {:tick-price              handle-tick-price
    :tick-size               handle-tick-size
+   :tick-string             handle-tick-string
    :tick-option-computation handle-tick-opt-comp
    :market-data-type        handle-market-data-type
    :warning                 handle-warning})
@@ -522,6 +595,29 @@
 (defn- send-account-summary [ecs {:keys [req-id tags]}]
   ((cs-fn 'request-account-summary) ecs req-id "All" (or tags "")))
 
+(defn- send-account-updates
+  "reqAccountUpdates is one-at-a-time per session: you (un)subscribe to a
+   single account. The stream pumps :update-portfolio + :update-account-value
+   + :update-account-time until cancelled. No req-id is involved."
+  [ecs {:keys [subscribe? account-code]}]
+  ((cs-fn 'request-account-updates) ecs (boolean subscribe?)
+                                    (or account-code "")))
+
+(defn- send-pnl
+  "reqPnL streams daily/unrealized/realized PnL for an account. Carries a
+   req-id (unlike reqAccountUpdates) so events route normally."
+  [ecs {:keys [req-id account-code model-code]}]
+  ((cs-fn 'request-pnl) ecs req-id (or account-code "") (or model-code "")))
+
+(defn- send-pnl-single
+  "reqPnLSingle streams per-position dailyPnL/unrealizedPnL/realizedPnL AND
+   a live :value (market value) using IB's server-side prices. Works around
+   the stinginess of reqAccountUpdates' updatePortfolio, which is reluctant
+   to fire on pure price changes."
+  [ecs {:keys [req-id account-code model-code conid]}]
+  ((cs-fn 'request-pnl-single) ecs req-id (or account-code "")
+                               (or model-code "") (int conid)))
+
 (defn- send-news-article [ecs {:keys [req-id provider-code article-id]}]
   ((cs-fn 'request-news-article) ecs req-id provider-code article-id))
 
@@ -549,6 +645,9 @@
    :req-fundamentals        send-fundamentals
    :req-positions           (fn [ecs _] ((cs-fn 'request-positions) ecs))
    :req-account-summary     send-account-summary
+   :req-account-updates     send-account-updates
+   :req-pnl                 send-pnl
+   :req-pnl-single          send-pnl-single
    :req-news-providers      (fn [ecs _] ((cs-fn 'request-news-providers) ecs))
    :req-news-article        send-news-article
    :req-historical-news     send-historical-news
@@ -571,7 +670,8 @@
   [conn req-id]
   (let [ecs (:ecs conn)]
     (doseq [fname '[cancel-market-data cancel-historical-data
-                    cancel-fundamental-data cancel-scanner-subscription]]
+                    cancel-fundamental-data cancel-scanner-subscription
+                    cancel-account-summary]]
       (try ((cs-fn fname) ecs req-id) (catch Throwable _))))
   (swap! pending dissoc req-id)
   nil)
@@ -648,6 +748,61 @@
   (let [id (dispatch-stream! conn {:type :req-positions} cb)]
     (reset! positions-rid id)
     id))
+
+(defn req-account-updates
+  "Subscribe to live portfolio + account-value updates for `account-code`.
+   Pi mash `cb` with each :update-portfolio / :update-account-value /
+   :update-account-time event. Returns the (id-less) subscription id; pass
+   to `cancel-account-updates` to stop."
+  [conn account-code cb]
+  (let [id (dispatch-stream! conn {:type         :req-account-updates
+                                    :subscribe?   true
+                                    :account-code account-code} cb)]
+    (reset! account-updates-rid id)
+    id))
+
+(defn cancel-account-updates
+  "Stop the active reqAccountUpdates stream. Sends reqAccountUpdates(false)
+   and clears the routing atom. Safe to call when nothing's subscribed."
+  [conn account-code]
+  (try
+    (send-request! conn {:type :req-account-updates
+                         :subscribe? false
+                         :account-code account-code})
+    (catch Throwable _))
+  (when-let [rid @account-updates-rid]
+    (swap! pending dissoc rid)
+    (reset! account-updates-rid nil))
+  nil)
+
+(defn req-pnl
+  "Subscribe to live account-level PnL (daily / unrealized / realized).
+   The :pnl events carry a :req-id so routing is normal — no rid fallback
+   needed. Returns the subscription id; pass to cancel-pnl."
+  [conn account-code cb]
+  (dispatch-stream! conn {:type :req-pnl :account-code account-code} cb))
+
+(defn cancel-pnl
+  "Stop a previously-started reqPnL subscription."
+  [conn req-id]
+  (try ((cs-fn 'cancel-pnl) (:ecs conn) req-id) (catch Throwable _))
+  (swap! pending dissoc req-id)
+  nil)
+
+(defn req-pnl-single
+  "Subscribe to live per-position PnL + market value for `conid` in
+   `account-code`. Returns the subscription id; pass to cancel-pnl-single."
+  [conn account-code conid cb]
+  (dispatch-stream! conn {:type :req-pnl-single
+                          :account-code account-code
+                          :conid conid} cb))
+
+(defn cancel-pnl-single
+  "Stop a previously-started reqPnLSingle subscription."
+  [conn req-id]
+  (try ((cs-fn 'cancel-pnl-single) (:ecs conn) req-id) (catch Throwable _))
+  (swap! pending dissoc req-id)
+  nil)
 
 (defn req-account-summary [conn tags cb]
   (dispatch-stream! conn {:type :req-account-summary :tags tags} cb))

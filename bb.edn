@@ -17,8 +17,8 @@
    :task (shell "cljfmt check src")}
 
   run-tui
-  {:doc "Launch the TUI against the per-user config root (~/.config/options-trader, or $OPTIONS_TRADER_CONFIG_DIR)"
-   :task (shell "bb" "tasks/run-tui.clj")}
+  {:doc "Launch the TUI against the per-user config root (~/.config/options-trader, or $OPTIONS_TRADER_CONFIG_DIR). Pass --profile prod/dev etc."
+   :task (apply shell "bb" "tasks/run-tui.clj" *command-line-args*)}
 
   install
   {:doc "First-run install: prereq check, seed per-user config + screens + indicators + agents + skills, run DB migrations"

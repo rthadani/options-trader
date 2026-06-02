@@ -76,12 +76,26 @@
 
 ;; ── Portfolio section ─────────────────────────────────────────────────────────
 
-(defn- portfolio-header [{:keys [account-id tws-status]} width]
+(defn- portfolio-header [{:keys [account-id tws-status portfolio-updated-at]} width]
   (let [tws  (case tws-status
                :connected    "🟢 connected"
                :disconnected "🔴 disconnected"
-               :connecting   "🟡 connecting")]
-    (pad (str " Portfolio  " account-id "  TWS: " tws) width)))
+               :connecting   "🟡 connecting"
+               "—")
+        ;; Show how stale the stream is so a frozen subscription is visible
+        ;; at a glance — without this the user has to /stream-stats to tell.
+        age  (when (and portfolio-updated-at (= tws-status :connected))
+               (let [s (long (/ (- (System/currentTimeMillis)
+                                   (long portfolio-updated-at))
+                                1000))]
+                 (cond
+                   (< s 5)   "live"
+                   (< s 60)  (str s "s ago")
+                   (< s 600) (str (long (/ s 60)) "m ago")
+                   :else     "stale")))]
+    (pad (str " Portfolio  " account-id "  TWS: " tws
+              (when age (str "  · stream: " age)))
+         width)))
 
 (defn- portfolio-table-header [width]
   (pad " Sym          Qty       Mkt       Avg       P&L        P&L%" width))
@@ -174,12 +188,10 @@
                                          :prompt    prompt
                                          :width     width})
         input-h   (count input-lines)
-        ;; Lines outside the chat area: header(1) + port-h + top-line(1)
+        ;; Lines outside the chat area: port-h + top-line(1)
         ;;                              + bot-line(1) + input-h + status(1)
         ;; chat-h is whatever's left so the total fits exactly in height.
-        chat-h    (max 4 (- height port-h input-h 4))
-        scope-str (name (:scope state))
-        model-str (str (:model state) " " (name (:provider state :claude)))
+        chat-h    (max 4 (- height port-h input-h 3))
         top-line  (str "─" (apply str (repeat (dec width) \─)))
         bot-line  (str "─" (apply str (repeat (dec width) \─)))
 
@@ -194,14 +206,18 @@
         agent-tag (let [agent-kw (:agent state :claude)
                         agent    (name agent-kw)
                         provider (name (:provider state :claude))
-                        model    (or (:model state) "—")]
+                        model    (or (:model state) "—")
+                        scope    (:scope state :scratch)
+                        scope-prefix (when (not= :scratch scope)
+                                       (str "[" (name scope) "] "))]
                     ;; Provider is only meaningful for the claude agent (it
                     ;; selects which Anthropic-compat endpoint to hit). For pi
                     ;; the concept is internal — show just `pi · model`.
-                    (cond
-                      (= agent-kw :pi)         (str "pi · " model)
-                      (= "claude" provider)    (str "claude · " model)
-                      :else                    (str "claude/" provider " · " model)))
+                    (str scope-prefix
+                         (cond
+                           (= agent-kw :pi)        (str "pi · " model)
+                           (= "claude" provider)   (str "claude · " model)
+                           :else                   (str "claude/" provider " · " model))))
         help-msg  (cond
                     (:streaming? state)
                     "esc to cancel"
@@ -213,11 +229,9 @@
                       (if (:streaming? state)
                         (str agent-tag "  ──  thinking...  ──  esc to cancel")
                         (str agent-tag "  ──  " help-msg)))
-        header    [(pad (str scope-str " | " model-str) width)]
         footer    (concat [bot-line] input-lines [(pad (str " " status) width)])]
     (str/join "\n"
               (concat
-               header
                port-lines
                [top-line]
                (for [ln chat-lines]

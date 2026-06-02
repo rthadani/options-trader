@@ -4,6 +4,47 @@
 
 (use-fixtures :each (fn [f] (st/reset-state!) (f) (st/reset-state!)))
 
+;;; ── Stream-driven portfolio upserts ───────────────────────────────────────
+
+(deftest upsert-position-matches-by-conid-when-present
+  (st/set-portfolio! {:positions [{:conid 1 :symbol "AAPL" :qty 100 :market-value 17500}]
+                      :account-summary nil :account-id "X"})
+  (st/upsert-position! {:conid 1 :symbol "AAPL" :qty 100 :market-value 18000})
+  (let [v (:positions @st/state)]
+    (is (= 1 (count v)))
+    (is (= 18000 (-> v first :market-value)))))
+
+(deftest upsert-position-falls-back-to-natural-key-when-conid-missing-on-existing
+  ;; This is the duplicate bug regression: DB-loaded rows have no conid, but
+  ;; stream events do. Without natural-key fallback, the stream would append
+  ;; instead of replace and we'd see two rows for the same position.
+  (st/set-portfolio! {:positions [{:symbol "AAPL" :opt-right "" :strike 0.0
+                                   :expiry nil :qty 100 :market-value 17500}]
+                      :account-summary nil :account-id "X"})
+  (st/upsert-position! {:conid 265598 :symbol "AAPL" :opt-right "" :strike 0.0
+                        :expiry nil :qty 100 :market-value 18250})
+  (let [v (:positions @st/state)]
+    (is (= 1 (count v)) "stream event replaced the DB-loaded row, no duplicate")
+    (is (= 18250 (-> v first :market-value)))
+    (is (= 265598 (-> v first :conid)))))
+
+(deftest upsert-position-drops-row-when-qty-zero
+  (st/set-portfolio! {:positions [{:conid 1 :symbol "AAPL" :qty 100}]
+                      :account-summary nil :account-id "X"})
+  (st/upsert-position! {:conid 1 :symbol "AAPL" :qty 0})
+  (is (empty? (:positions @st/state))))
+
+(deftest upsert-position-ignores-new-zero-qty-row
+  (st/set-portfolio! {:positions [] :account-summary nil :account-id "X"})
+  (st/upsert-position! {:conid 1 :symbol "AAPL" :qty 0})
+  (is (empty? (:positions @st/state))))
+
+(deftest upsert-position-appends-new-symbol
+  (st/set-portfolio! {:positions [{:conid 1 :symbol "AAPL" :qty 100}]
+                      :account-summary nil :account-id "X"})
+  (st/upsert-position! {:conid 2 :symbol "MSFT" :qty 50})
+  (is (= 2 (count (:positions @st/state)))))
+
 (deftest user-and-assistant-go-to-conversation
   (st/append-message! :user "USERMSG")
   (st/append-message! :assistant "REPLY")

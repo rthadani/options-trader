@@ -32,7 +32,23 @@
    :input-history    []
    :history-idx      nil
    :profile          nil
-   :ibkr-config      nil})
+   :ibkr-config      nil
+   ;; ── Terminal dims, refreshed on WINCH ──────────────────────────────────
+   :width            80
+   :height           24
+   ;; ── IB streaming bookkeeping (moved here from scattered defonces) ──────
+   :stream {:pnl-rid          nil
+            :pnl-single-rids  {}              ;; conid → req-id
+            :counters         {:update-portfolio      0
+                               :update-account-value  0
+                               :update-account-time   0
+                               :account-download-end  0
+                               :pnl                   0
+                               :pnl-single            0
+                               :other                 0
+                               :first-event-types     #{}
+                               :last-portfolio-at     nil
+                               :last-pnl-at           nil}}})
 
 (defonce state (atom initial-state))
 
@@ -94,6 +110,137 @@
          :positions       (or positions [])
          :account-summary account-summary
          :account-id      account-id))
+
+(defn- positions-match?
+  "Two position rows refer to the same position when EITHER their conids
+   match (preferred — unambiguous), OR their (symbol, opt-right, strike,
+   expiry) tuples match. The OR lets a stream event (which has :conid) merge
+   with an existing DB-loaded row (which doesn't carry :conid in the schema)."
+  [a b]
+  (or (and (:conid a) (:conid b) (= (:conid a) (:conid b)))
+      (= [(:symbol a) (:opt-right a) (:strike a) (:expiry a)]
+         [(:symbol b) (:opt-right b) (:strike b) (:expiry b)])))
+
+(defn apply-pnl-single!
+  "Apply a reqPnLSingle :pnl-single event — per-position live PnL + market
+   value. Updates the matching :positions row by :conid. Uses pick-style key
+   defaulting because ib-re-actor splits PNL on each capital (:daily-pn-l
+   etc.). The :value field is the broker's live market value — exactly what
+   updatePortfolio is lazy about delivering."
+  [ev]
+  (let [conid     (:conid ev)
+        daily     (or (:daily-pnl ev)      (:daily-pn-l ev))
+        unreal    (or (:unrealized-pnl ev) (:unrealized-pn-l ev))
+        realized  (or (:realized-pnl ev)   (:realized-pn-l ev))
+        value     (or (:value ev) (:position-value ev))
+        qty       (or (:position ev) (:pos ev))
+        num       (fn [v] (when (number? v) (double v)))]
+    (when conid
+      (swap! state
+             (fn [s]
+               (let [v   (vec (or (:positions s) []))
+                     idx (first (keep-indexed
+                                  (fn [i p] (when (= conid (:conid p)) i)) v))]
+                 (-> s
+                     (cond->
+                       idx
+                       (update :positions
+                               (fn [vec']
+                                 (let [row (nth vec' idx)
+                                       row' (cond-> row
+                                              (num value)    (assoc :market-value (num value))
+                                              (num unreal)   (assoc :unrealized-pnl (num unreal))
+                                              (num realized) (assoc :realized-pnl (num realized))
+                                              (num daily)    (assoc :daily-pnl (num daily))
+                                              (num qty)      (assoc :qty (long (num qty))))]
+                                   (assoc vec' idx row')))))
+                     (assoc :portfolio-updated-at (System/currentTimeMillis)))))))))
+
+(defn upsert-position!
+  "Stream-friendly position update. Upserts in :positions by either-or
+   match (see positions-match?) and drops the row when qty hits zero
+   (IB reports closed positions with qty=0 one last time). Also bumps
+   :portfolio-updated-at so the render can show a freshness indicator."
+  [pos]
+  (swap! state
+         (fn [s]
+           (let [v   (vec (or (:positions s) []))
+                 idx (first (keep-indexed
+                              (fn [i p] (when (positions-match? p pos) i)) v))
+                 v'  (cond
+                       (and idx (zero? (long (or (:qty pos) 0))))
+                       (vec (concat (subvec v 0 idx) (subvec v (inc idx))))
+
+                       idx
+                       (assoc v idx pos)
+
+                       (zero? (long (or (:qty pos) 0)))
+                       v
+
+                       :else
+                       (conj v pos))]
+             (assoc s
+                    :positions v'
+                    :portfolio-updated-at (System/currentTimeMillis))))))
+
+(def ^:private account-value-key
+  "Map IB's updateAccountValue 'key' strings to our :account-summary keys.
+   Only fields the render or downstream code reads are mapped; everything
+   else is ignored so we don't bloat state.
+
+   Note: NOT mapping IB's 'UnrealizedPnL'/'RealizedPnL' to :day-pl — those
+   are TOTAL unrealized/realized across all positions, NOT today's P&L.
+   Use reqPnL for the broker's true daily P&L (mapped via update-pnl!)."
+  {"NetLiquidation"      :net-liq
+   "TotalCashValue"      :cash
+   "AvailableFunds"      :available-funds
+   "BuyingPower"         :buying-power
+   "ExcessLiquidity"     :excess-liquidity
+   "GrossPositionValue"  :gross-position-value
+   "UnrealizedPnL"       :unrealized-pl-total
+   "RealizedPnL"         :realized-pl-total
+   "InitMarginReq"       :init-margin
+   "MaintMarginReq"      :maint-margin
+   "FullInitMarginReq"   :full-init-margin
+   "FullMaintMarginReq"  :full-maint-margin})
+
+(defn update-pnl!
+  "Apply a reqPnL :pnl event to :account-summary. Maps daily P&L → :day-pl
+   (the broker's true daily figure, not 'sum of unrealized'). ib-re-actor's
+   kebab converter splits `dailyPNL` on each capital so the keys arrive as
+   `:daily-pn-l` (double dash) — read both forms defensively."
+  [ev]
+  (let [daily      (or (:daily-pnl ev)      (:daily-pn-l ev))
+        unrealized (or (:unrealized-pnl ev) (:unrealized-pn-l ev))
+        realized   (or (:realized-pnl ev)   (:realized-pn-l ev))
+        num        (fn [v] (when (number? v) (double v)))]
+    (swap! state
+           (fn [s]
+             (-> s
+                 (update :account-summary
+                         (fn [m]
+                           (let [m (or m {})]
+                             (cond-> m
+                               (num daily)      (assoc :day-pl       (num daily))
+                               (num unrealized) (assoc :unrealized-pl (num unrealized))
+                               (num realized)   (assoc :realized-pl   (num realized))))))
+                 (assoc :portfolio-updated-at (System/currentTimeMillis)))))))
+
+(defn update-account-value!
+  "Apply an updateAccountValue event. Parses :value to a double when possible
+   and merges into :account-summary. Bumps :account-updated-at (separate from
+   :portfolio-updated-at) so the freshness indicator reflects position value
+   movement, not the harmless 3-minute account-time pings."
+  [{:keys [key value]}]
+  (when-let [k (get account-value-key key)]
+    (let [n (try (Double/parseDouble (str value)) (catch Throwable _ nil))]
+      (when (some? n)
+        (swap! state
+               (fn [s]
+                 (-> s
+                     (update :account-summary
+                             (fn [m] (assoc (or m {}) k n)))
+                     (assoc :account-updated-at (System/currentTimeMillis)))))))))
 
 (defn quit! []
   (swap! state assoc :exit? true))

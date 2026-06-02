@@ -471,6 +471,28 @@
 (defn handle-disconnect [_args _ds]
   (tui-ibkr/disconnect!))
 
+(defn handle-stream-stats [_args _ds]
+  (let [s    @st/state
+        c    (get-in s [:stream :counters])
+        n-p  (count (:positions s))
+        now  (System/currentTimeMillis)
+        ago  (fn [t] (when t (str (long (/ (- now t) 1000)) "s ago")))]
+    (st/append-chat! :system
+      (str "counters: portfolio=" (:update-portfolio c)
+           "  account-value=" (:update-account-value c)
+           "  pnl=" (:pnl c)
+           "  pnl-single=" (:pnl-single c)
+           "  account-time=" (:update-account-time c)
+           "  download-end=" (:account-download-end c)
+           "  other=" (:other c)))
+    (st/append-chat! :system
+      (str "state: positions=" n-p
+           "  tws=" (name (:tws-status s :disconnected))
+           "  account=" (or (:account-id s) "nil")
+           "  pnl-single-subs=" (count (get-in s [:stream :pnl-single-rids]))
+           "  portfolio-updated=" (ago (:portfolio-updated-at s))
+           "  last-pnl=" (ago (:last-pnl-at c))))))
+
 (defn handle-clear-investigation [_args _ds]
   (swap! st/state assoc :scope :scratch)
   (st/append-chat! :system "scope = scratch"))
@@ -525,6 +547,7 @@
    "/refresh"             handle-refresh
    "/refresh-portfolio"   handle-refresh
    "/refresh-positions"   handle-refresh
+   "/stream-stats"        handle-stream-stats
    "/reload-screens"      handle-reload-screens
    "/reload-indicators"   handle-reload-indicators
    "/connect"             handle-connect
@@ -743,6 +766,15 @@
   "Initialize state atom and run any startup refresh."
   [{:keys [ds account-id ibkr-config profile initial-message]}]
   (st/reset-state!)
+  ;; Any state mutation (stream position upsert, status change, scope switch,
+  ;; etc.) triggers a render. Without this watch, background updates from the
+  ;; IB stream wouldn't paint until the user pressed a key.
+  ;; remove-watch keeps it idempotent across init calls / hot reloads.
+  (remove-watch st/state ::refresh-on-change)
+  (add-watch st/state ::refresh-on-change
+             (fn [_ _ old new]
+               (when-not (identical? old new)
+                 (a/put! refresh-chan :refresh))))
   (st/load-input-history!)
   (st/load-tui-prefs!)
   ;; Sync the loaded agent/provider/model into llm's atoms so the first spawn

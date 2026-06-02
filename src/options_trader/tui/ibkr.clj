@@ -1,26 +1,44 @@
 (ns options-trader.tui.ibkr
-  "Background IBKR connection + portfolio refresh for the TUI.
+  "Background IBKR connection + live portfolio streaming for the TUI.
 
-   This is the streaming surface for the TUI: a connect thread, a poller that
-   re-runs portfolio.core/refresh! every few seconds, and slash-callable
-   connect/disconnect helpers. Each refresh exercises ibkr's streaming
-   req-positions / req-account-summary internally."
+   Architecture:
+     • connect-async! opens the TWS socket, captures the account-id from the
+       managedAccounts handshake, does ONE initial refresh from DB+IB so the
+       panel is populated immediately, then starts the streaming subscription
+       and the health watchdog.
+     • The streaming subscription uses reqAccountUpdates → :update-portfolio
+       (live market values per position) + :update-account-value (NetLiq, BP,
+       margin, etc.). Each event ticks state directly — no polling.
+     • The health watchdog runs every health-interval-ms and corrects
+       :tws-status when it diverges from the actual socket state. Catches
+       silent drops the underlying TCP doesn't surface."
   (:require [clojure.core.async :as a]
             [options-trader.data.ibkr :as ibkr]
             [options-trader.portfolio.core :as portfolio]
             [options-trader.tui.state :as st]))
 
+;; External resources / plumbing — NOT in the state atom (they're not data):
+;;   conn-atom         — the live IB Java client object
+;;   stream-stop-atom  — string marker (subscribed account-code) — TODO inline
+;;   health-stop-atom  — core.async stop channel
+;; Everything else (rids, counters, last-update timestamps) lives in
+;; st/state under :stream — see tui.state/initial-state.
 (defonce ^:private conn-atom (atom nil))
-(defonce ^:private poller-atom (atom nil))
+(defonce ^:private stream-stop-atom (atom nil))
+(defonce ^:private health-stop-atom (atom nil))
 
-(def ^:private poll-interval-ms 15000)
 
-;;; ── State helpers ──────────────────────────────────────────────────────────
+(def ^:private health-interval-ms 2000)
 
-(defn- log-message! [msg]
-  (st/append-message! :system (str "[ibkr] " msg)))
+;;; ── Logging helper ────────────────────────────────────────────────────────
 
-;;; ── Refresh ────────────────────────────────────────────────────────────────
+(defn- log-message!
+  "Surface an ibkr status line in the chat (NOT the activity stream, which
+   the render never displays — that ate every diagnostic before this fix)."
+  [msg]
+  (st/append-chat! :system (str "[ibkr] " msg)))
+
+;;; ── One-shot DB+IB refresh (used at startup and by /refresh) ──────────────
 
 (defn refresh-from-ibkr! [ds account-id]
   (when-let [conn @conn-atom]
@@ -36,53 +54,261 @@
       (catch Throwable t
         (log-message! (str "refresh failed: " (.getMessage t)))))))
 
-;;; ── Poller ─────────────────────────────────────────────────────────────────
+;;; ── Streaming portfolio + account updates ─────────────────────────────────
 
-(defn- stop-poller! []
-  (when-let [stop @poller-atom]
-    (a/close! stop)
-    (reset! poller-atom nil)))
+(defn- bump-counter! [k]
+  (swap! st/state update-in [:stream :counters]
+         (fn [c] (-> c (update k (fnil inc 0))))))
 
-(defn- start-poller! [ds]
-  (stop-poller!)
-  (let [stop (a/chan)]
-    (reset! poller-atom stop)
+(defn- mark-first-event! [t]
+  (let [seen?  (contains? (get-in @st/state [:stream :counters :first-event-types] #{}) t)]
+    (swap! st/state update-in [:stream :counters :first-event-types] (fnil conj #{}) t)
+    (not seen?)))
+
+(defn- handle-pnl-event
+  "Callback for the reqPnL subscription. We registered this against a known
+   req-id, so any non-nil map that lands here is a PnL event regardless of
+   what :type ib-re-actor labelled it with."
+  [ev]
+  (when (map? ev)
+    (bump-counter! :pnl)
+    (swap! st/state assoc-in [:stream :counters :last-pnl-at] (System/currentTimeMillis))
+    (when (mark-first-event! :pnl)
+      (log-message! (str "stream first :pnl — type=" (:type ev) " keys=" (sort (keys ev)))))
+    (st/update-pnl! ev)))
+
+(defn- handle-pnl-single-event
+  "Callback for the reqPnLSingle subscription. Same reasoning as the pnl
+   handler — the rid routing guarantees this is a per-position PnL event."
+  [ev]
+  (when (map? ev)
+    (bump-counter! :pnl-single)
+    (when (mark-first-event! :pnl-single)
+      (log-message! (str "stream first :pnl-single — type=" (:type ev)
+                         " keys=" (sort (keys ev))
+                         " sample={value=" (:value ev)
+                         " daily=" (or (:daily-pnl ev) (:daily-pn-l ev))
+                         " conid=" (or (:conid ev) "?") "}")))
+    (st/apply-pnl-single! ev)))
+
+(defn- subscribe-pnl-single-for!
+  "Subscribe a reqPnLSingle stream for one conid if we haven't already.
+   The callback is wrapped in a closure that injects :conid into each event,
+   because TWS's pnlSingle callback only delivers :req-id (the conid would
+   otherwise be unrecoverable from the event payload)."
+  [account-id conid]
+  (let [rids (get-in @st/state [:stream :pnl-single-rids] {})]
+    (when (and conid @conn-atom (not (contains? rids conid)))
+      (try
+        (let [tagged-cb (fn [ev]
+                          (handle-pnl-single-event
+                            (if (map? ev) (assoc ev :conid conid) ev)))
+              rid (ibkr/req-pnl-single @conn-atom account-id conid tagged-cb)]
+          (swap! st/state assoc-in [:stream :pnl-single-rids conid] rid))
+        (catch Throwable t
+          (log-message! (str "pnl-single subscribe failed for conid=" conid
+                             ": " (.getMessage t))))))))
+
+(defn- subscribe-pnl-singles-for-all-positions! [account-id]
+  (doseq [pos (:positions @st/state)]
+    (subscribe-pnl-single-for! account-id (:conid pos)))
+  (log-message! (str "subscribed reqPnLSingle for "
+                     (count (get-in @st/state [:stream :pnl-single-rids]))
+                     " positions — live market values incoming")))
+
+(defn- cancel-all-pnl-singles! []
+  (when @conn-atom
+    (doseq [[_conid rid] (get-in @st/state [:stream :pnl-single-rids])]
+      (try (ibkr/cancel-pnl-single @conn-atom rid) (catch Throwable _))))
+  (swap! st/state assoc-in [:stream :pnl-single-rids] {}))
+
+(defn- handle-stream-event
+  "Stream callbacks get ONE event per invocation, plus a final nil when the
+   subscription ends. (batch callbacks get the accumulated vector; streams
+   don't — that's the whole point.)"
+  [ev]
+  (when (map? ev)
+    (let [t (:type ev)]
+      ;; Counter bookkeeping — surfaces via /stream-stats so silent failures
+      ;; are debuggable. Also log the first event of each NEW type so the
+      ;; user can see what IB is actually emitting (helpful when ib-re-actor
+      ;; key names differ from what we expect).
+      (let [kind (case t
+                   :update-portfolio     :update-portfolio
+                   :update-account-value :update-account-value
+                   :update-account-time  :update-account-time
+                   :account-download-end :account-download-end
+                   :other)
+            first? (mark-first-event! t)]
+        (bump-counter! kind)
+        (when (= t :update-portfolio)
+          (swap! st/state assoc-in [:stream :counters :last-portfolio-at]
+                 (System/currentTimeMillis)))
+        (when first?
+          (log-message! (str "stream first " (name (or t :nil))
+                             " — keys=" (sort (keys ev))))))
+      (case t
+        :update-portfolio
+        (do (st/upsert-position! (dissoc ev :type))
+            ;; Subscribe per-position PnL stream so market_value updates
+            ;; even when updatePortfolio gets stingy with price ticks.
+            (when-let [acct (:account-id @st/state)]
+              (subscribe-pnl-single-for! acct (:conid ev))))
+
+        :update-account-value
+        (st/update-account-value! ev)
+
+        :account-download-end
+        (when-let [acct (:account-id @st/state)]
+          (subscribe-pnl-singles-for-all-positions! acct))
+
+        nil))))
+
+(defn- start-stream! [account-id]
+  (when-let [conn @conn-atom]
+    (try
+      (ibkr/req-account-updates conn account-id handle-stream-event)
+      (reset! stream-stop-atom account-id)
+      (log-message! (str "streaming portfolio for " account-id))
+      (catch Throwable t
+        (log-message! (str "stream subscribe failed: " (.getMessage t)))))
+    (try
+      (let [rid (ibkr/req-pnl conn account-id handle-pnl-event)]
+        (swap! st/state assoc-in [:stream :pnl-rid] rid)
+        (log-message! (str "streaming reqPnL (daily/unrealized/realized) for " account-id)))
+      (catch Throwable t
+        (log-message! (str "reqPnL subscribe failed: " (.getMessage t)))))))
+
+(defn- stop-stream! []
+  (when-let [acct @stream-stop-atom]
+    (try
+      (when @conn-atom (ibkr/cancel-account-updates @conn-atom acct))
+      (catch Throwable _))
+    (reset! stream-stop-atom nil))
+  (when-let [rid (get-in @st/state [:stream :pnl-rid])]
+    (try (when @conn-atom (ibkr/cancel-pnl @conn-atom rid))
+         (catch Throwable _))
+    (swap! st/state assoc-in [:stream :pnl-rid] nil))
+  (cancel-all-pnl-singles!))
+
+;;; ── Health watchdog ───────────────────────────────────────────────────────
+
+(def ^:private stale-stream-threshold-ms 45000)
+
+(defn- maybe-resubscribe-stream! []
+  (when-let [acct (:account-id @st/state)]
+    (let [now      (System/currentTimeMillis)
+          last-at  (or (:portfolio-updated-at @st/state) 0)
+          stale?   (> (- now last-at) stale-stream-threshold-ms)]
+      (when (and stale? (ibkr/is-connected?))
+        (log-message! (str "stream stale — re-subscribing reqAccountUpdates for " acct))
+        (try (ibkr/cancel-account-updates @conn-atom acct) (catch Throwable _))
+        (try (ibkr/req-account-updates @conn-atom acct handle-stream-event)
+             (swap! st/state assoc :portfolio-updated-at now)
+             (catch Throwable t
+               (log-message! (str "re-subscribe failed: " (.getMessage t)))))))))
+
+(defn- start-health-watchdog! []
+  (when @health-stop-atom
+    (a/close! @health-stop-atom)
+    (reset! health-stop-atom nil))
+  (let [stop (a/chan)
+        ;; ibkr/is-connected? can return false momentarily during heavy
+        ;; event traffic even when the socket is fine. Require N consecutive
+        ;; false readings before flipping to :disconnected so the indicator
+        ;; doesn't strobe between connected/disconnected.
+        miss-streak (atom 0)
+        miss-threshold 3]
+    (reset! health-stop-atom stop)
     (a/go-loop []
-      (let [timeout (a/timeout poll-interval-ms)
+      (let [timeout (a/timeout health-interval-ms)
             [_ ch]  (a/alts! [stop timeout])]
         (when (= ch timeout)
-          (when-let [account-id (:account-id @st/state)]
-            (a/thread (refresh-from-ibkr! ds account-id)))
+          (let [actual    (ibkr/is-connected?)
+                reported  (= :connected (:tws-status @st/state))]
+            (if actual
+              (do (reset! miss-streak 0)
+                  (when (not reported) (st/set-tws-status! :connected)))
+              (let [n (swap! miss-streak inc)]
+                (when (and reported (>= n miss-threshold))
+                  (st/set-tws-status! :disconnected)
+                  (log-message! (str "TWS socket dropped — "
+                                     n " consecutive health checks failed"))))))
+          ;; Even with the socket alive, the reqAccountUpdates subscription
+          ;; can get torn down silently if TWS sends a stray :error tagged
+          ;; with our rid. Re-subscribe when updates have stalled for too long.
+          (try (maybe-resubscribe-stream!) (catch Throwable _))
           (recur))))))
 
-;;; ── Connect / disconnect ───────────────────────────────────────────────────
+(defn- stop-health-watchdog! []
+  (when-let [stop @health-stop-atom]
+    (a/close! stop)
+    (reset! health-stop-atom nil)))
+
+;;; ── Connect / disconnect ──────────────────────────────────────────────────
+
+(defn- await-account!
+  "Poll for the account-id from the TWS managedAccounts handshake. The event
+   is async so an immediate read of (ibkr/default-account) right after connect
+   may return nil. Returns the account-id or nil after `deadline-ms`."
+  [deadline-ms]
+  (let [deadline (+ (System/currentTimeMillis) deadline-ms)]
+    (loop []
+      (if-let [a (or (:account-id @st/state) (ibkr/default-account))]
+        a
+        (when (< (System/currentTimeMillis) deadline)
+          (Thread/sleep 100)
+          (recur))))))
 
 (defn connect-async!
   "Spawn a background thread that connects to TWS, detects the account-id,
-   does an initial portfolio refresh, and starts the polling loop. Updates
-   :tws-status on the state atom throughout."
+   does an initial refresh, starts the streaming subscription, and starts
+   the health watchdog. The watchdog runs *immediately* so status reflects
+   reality even if the connect attempt hangs or throws.
+
+   All paths surface errors as chat-visible system messages — silent
+   thread-death used to leave :tws-status stuck at :connecting."
   [{:keys [host port client-id ds]}]
   (st/set-tws-status! :connecting)
   (log-message! (str "connecting to " host ":" port " client-id=" client-id))
+  ;; Start the watchdog FIRST. It owns the :tws-status transitions from
+  ;; here on out, so even if the connect thread dies, status converges
+  ;; to :disconnected within health-interval-ms.
+  (start-health-watchdog!)
   (a/thread
-    (let [c (ibkr/connect! host port client-id)]
-      (cond
-        (or (nil? c) (= c :unavailable))
-        (do (st/set-tws-status! :disconnected)
-            (log-message! "TWS unreachable — staying with cached portfolio"))
+    (try
+      (let [c (try (ibkr/connect! host port client-id)
+                   (catch Throwable t
+                     (log-message! (str "connect threw: " (.getMessage t)))
+                     :unavailable))]
+        (cond
+          (or (nil? c) (= c :unavailable))
+          (do (st/set-tws-status! :disconnected)
+              (log-message! "TWS unreachable — staying with cached portfolio"))
 
-        :else
-        (do (reset! conn-atom c)
-            (st/set-tws-status! :connected)
-            (let [account (or (:account-id @st/state) (ibkr/default-account))]
-              (when account
-                (swap! st/state assoc :account-id account)
-                (log-message! (str "connected; account=" account))
-                (refresh-from-ibkr! ds account)
-                (start-poller! ds))))))))
+          :else
+          (do (reset! conn-atom c)
+              (st/set-tws-status! :connected)
+              (if-let [account (await-account! 5000)]
+                (do (swap! st/state assoc :account-id account)
+                    (log-message! (str "connected; account=" account))
+                    (try (refresh-from-ibkr! ds account)
+                         (catch Throwable t
+                           (log-message! (str "initial refresh failed: "
+                                              (.getMessage t)))))
+                    (try (start-stream! account)
+                         (catch Throwable t
+                           (log-message! (str "stream failed to start: "
+                                              (.getMessage t))))))
+                (log-message!
+                  "connected but no managedAccounts event arrived within 5s — type /refresh once it shows up")))))
+      (catch Throwable t
+        (st/set-tws-status! :disconnected)
+        (log-message! (str "connect thread died: " (.getMessage t)))))))
 
 (defn disconnect! []
-  (stop-poller!)
+  (stop-stream!)
+  (stop-health-watchdog!)
   (try (ibkr/disconnect!) (catch Throwable _))
   (reset! conn-atom nil)
   (st/set-tws-status! :disconnected)
