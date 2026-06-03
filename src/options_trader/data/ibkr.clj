@@ -55,8 +55,11 @@
 (defn ->contract
   "Build (or normalise) a contract map for ib-re-actor.
    String arg: (->contract \"AAPL\") → STK / SMART / USD defaults.
-   Map arg:    keyword :sec-type/:right values get name-ified so the
-   ib-re-actor translation layer's string passthrough handles them.
+   Map arg:    keyword :sec-type gets name-ified. :right is left as-is —
+   ib-re-actor's translation table expects the KEYWORD form (:put / :call),
+   so calling (name :put) here would silently turn it into \"put\", the
+   translation would fail to match, and the IB Contract would ship with a
+   null right field → TWS error 321.
    Idempotent."
   [x]
   (cond
@@ -65,8 +68,7 @@
 
     (map? x)
     (cond-> x
-      (keyword? (:sec-type x)) (update :sec-type name)
-      (keyword? (:right x))    (update :right    name))
+      (keyword? (:sec-type x)) (update :sec-type name))
 
     :else x))
 
@@ -505,13 +507,22 @@
 (defn- handle-warning [acc {:keys [code message]}]
   (swap! acc update :warnings conj {:code code :message message}))
 
+(defn- handle-error
+  "Hard errors land as one-element event vectors when TWS rejects the
+   request (bad contract, no security definition, etc). Capture them on
+   :errors so the caller sees WHY the snapshot is empty instead of just
+   getting back a blank map of nils."
+  [acc {:keys [code message]}]
+  (swap! acc update :errors (fnil conj []) {:code code :message message}))
+
 (def ^:private snapshot-event-handlers
   {:tick-price              handle-tick-price
    :tick-size               handle-tick-size
    :tick-string             handle-tick-string
    :tick-option-computation handle-tick-opt-comp
    :market-data-type        handle-market-data-type
-   :warning                 handle-warning})
+   :warning                 handle-warning
+   :error                   handle-error})
 
 (defn normalize-snapshot
   "Fold a vector of tick events from req-market-data-snapshot into a flat

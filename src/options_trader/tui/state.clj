@@ -46,8 +46,6 @@
                                :pnl                   0
                                :pnl-single            0
                                :other                 0
-                               :first-event-types     #{}
-                               :last-portfolio-at     nil
                                :last-pnl-at           nil}}})
 
 (defonce state (atom initial-state))

@@ -19,14 +19,15 @@
   (testing "loads every tool schema from resources"
     (let [reg (tools/load-registry)]
       (is (map? reg))
-      (is (= 18 (count reg)))
+      (is (= 19 (count reg)))
       (doseq [nm ["portfolio_summary" "list_screens" "run_screen" "run_sql"
                   "get_indicators" "place_order" "cancel_order"
                   "fetch_news" "fetch_filings" "fetch_filing_body"
                   "fetch_filing_item" "fetch_xbrl_facts"
                   "fetch_corporate_actions" "fetch_fundamentals"
                   "fetch_earnings_history" "fetch_short_interest"
-                  "fetch_option_chain" "fetch_option_quote"]]
+                  "fetch_option_chain" "fetch_option_quote"
+                  "fetch_detailed_quote"]]
         (is (contains? reg nm) (str "missing schema: " nm)))))
 
   (testing "each schema has name, description, inputSchema"
@@ -41,7 +42,7 @@
     (let [reg   (tools/load-registry)
           items (tools/list-tools reg)]
       (is (vector? items))
-      (is (= 18 (count items)))
+      (is (= 19 (count items)))
       (doseq [t items]
         (is (string? (:name t)))
         (is (string? (:description t)))

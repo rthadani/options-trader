@@ -1,0 +1,12 @@
+{
+  "name": "fetch_quote",
+  "description": "Fetch a detailed quote (bid, ask, IV, greeks) for a single ticker. Read-only.",
+  "annotations": {"readOnlyHint": true},
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol":     {"type": "string", "description": "Underlying ticker, e.g. \"AAPL\"."}
+    },
+    "required": ["symbol"]
+  }
+}

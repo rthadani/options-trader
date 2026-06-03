@@ -17,12 +17,12 @@
             [options-trader.portfolio.core :as portfolio]
             [options-trader.tui.state :as st]))
 
-;; External resources / plumbing — NOT in the state atom (they're not data):
-;;   conn-atom         — the live IB Java client object
-;;   stream-stop-atom  — string marker (subscribed account-code) — TODO inline
-;;   health-stop-atom  — core.async stop channel
-;; Everything else (rids, counters, last-update timestamps) lives in
-;; st/state under :stream — see tui.state/initial-state.
+;; External resources / plumbing — NOT in the state atom:
+;;   conn-atom         the live IB Java client object
+;;   stream-stop-atom  account-code that owns the reqAccountUpdates stream
+;;   health-stop-atom  core.async stop channel for the watchdog go-loop
+;; Everything else (rids, counters, etc.) lives in st/state under :stream
+;; — see tui.state/initial-state.
 (defonce ^:private conn-atom (atom nil))
 (defonce ^:private stream-stop-atom (atom nil))
 (defonce ^:private health-stop-atom (atom nil))
@@ -60,11 +60,6 @@
   (swap! st/state update-in [:stream :counters]
          (fn [c] (-> c (update k (fnil inc 0))))))
 
-(defn- mark-first-event! [t]
-  (let [seen?  (contains? (get-in @st/state [:stream :counters :first-event-types] #{}) t)]
-    (swap! st/state update-in [:stream :counters :first-event-types] (fnil conj #{}) t)
-    (not seen?)))
-
 (defn- handle-pnl-event
   "Callback for the reqPnL subscription. We registered this against a known
    req-id, so any non-nil map that lands here is a PnL event regardless of
@@ -73,22 +68,14 @@
   (when (map? ev)
     (bump-counter! :pnl)
     (swap! st/state assoc-in [:stream :counters :last-pnl-at] (System/currentTimeMillis))
-    (when (mark-first-event! :pnl)
-      (log-message! (str "stream first :pnl — type=" (:type ev) " keys=" (sort (keys ev)))))
     (st/update-pnl! ev)))
 
 (defn- handle-pnl-single-event
-  "Callback for the reqPnLSingle subscription. Same reasoning as the pnl
-   handler — the rid routing guarantees this is a per-position PnL event."
+  "Callback for the reqPnLSingle subscription. The rid routing guarantees
+   this is a per-position PnL event."
   [ev]
   (when (map? ev)
     (bump-counter! :pnl-single)
-    (when (mark-first-event! :pnl-single)
-      (log-message! (str "stream first :pnl-single — type=" (:type ev)
-                         " keys=" (sort (keys ev))
-                         " sample={value=" (:value ev)
-                         " daily=" (or (:daily-pnl ev) (:daily-pn-l ev))
-                         " conid=" (or (:conid ev) "?") "}")))
     (st/apply-pnl-single! ev)))
 
 (defn- subscribe-pnl-single-for!
@@ -111,10 +98,7 @@
 
 (defn- subscribe-pnl-singles-for-all-positions! [account-id]
   (doseq [pos (:positions @st/state)]
-    (subscribe-pnl-single-for! account-id (:conid pos)))
-  (log-message! (str "subscribed reqPnLSingle for "
-                     (count (get-in @st/state [:stream :pnl-single-rids]))
-                     " positions — live market values incoming")))
+    (subscribe-pnl-single-for! account-id (:conid pos))))
 
 (defn- cancel-all-pnl-singles! []
   (when @conn-atom
@@ -128,25 +112,14 @@
    don't — that's the whole point.)"
   [ev]
   (when (map? ev)
-    (let [t (:type ev)]
-      ;; Counter bookkeeping — surfaces via /stream-stats so silent failures
-      ;; are debuggable. Also log the first event of each NEW type so the
-      ;; user can see what IB is actually emitting (helpful when ib-re-actor
-      ;; key names differ from what we expect).
-      (let [kind (case t
-                   :update-portfolio     :update-portfolio
-                   :update-account-value :update-account-value
-                   :update-account-time  :update-account-time
-                   :account-download-end :account-download-end
-                   :other)
-            first? (mark-first-event! t)]
-        (bump-counter! kind)
-        (when (= t :update-portfolio)
-          (swap! st/state assoc-in [:stream :counters :last-portfolio-at]
-                 (System/currentTimeMillis)))
-        (when first?
-          (log-message! (str "stream first " (name (or t :nil))
-                             " — keys=" (sort (keys ev))))))
+    (let [t    (:type ev)
+          kind (case t
+                 :update-portfolio     :update-portfolio
+                 :update-account-value :update-account-value
+                 :update-account-time  :update-account-time
+                 :account-download-end :account-download-end
+                 :other)]
+      (bump-counter! kind)
       (case t
         :update-portfolio
         (do (st/upsert-position! (dissoc ev :type))
@@ -169,13 +142,11 @@
     (try
       (ibkr/req-account-updates conn account-id handle-stream-event)
       (reset! stream-stop-atom account-id)
-      (log-message! (str "streaming portfolio for " account-id))
       (catch Throwable t
         (log-message! (str "stream subscribe failed: " (.getMessage t)))))
     (try
       (let [rid (ibkr/req-pnl conn account-id handle-pnl-event)]
-        (swap! st/state assoc-in [:stream :pnl-rid] rid)
-        (log-message! (str "streaming reqPnL (daily/unrealized/realized) for " account-id)))
+        (swap! st/state assoc-in [:stream :pnl-rid] rid))
       (catch Throwable t
         (log-message! (str "reqPnL subscribe failed: " (.getMessage t)))))))
 
@@ -201,7 +172,8 @@
           last-at  (or (:portfolio-updated-at @st/state) 0)
           stale?   (> (- now last-at) stale-stream-threshold-ms)]
       (when (and stale? (ibkr/is-connected?))
-        (log-message! (str "stream stale — re-subscribing reqAccountUpdates for " acct))
+        ;; Silent re-subscribe — visible in the header's "stream: live/Ns ago"
+        ;; indicator, no need to flood the chat. Failures still surface.
         (try (ibkr/cancel-account-updates @conn-atom acct) (catch Throwable _))
         (try (ibkr/req-account-updates @conn-atom acct handle-stream-event)
              (swap! st/state assoc :portfolio-updated-at now)
@@ -316,3 +288,10 @@
 
 (defn connected? []
   (some? @conn-atom))
+
+(defn live-conn
+  "Return the active IB client, or nil if not connected. Public accessor so
+   one-shot queries (option quotes, ad-hoc snapshots) don't need to reach
+   into the private conn-atom."
+  []
+  @conn-atom)

@@ -29,7 +29,7 @@
     (let [req  (json/generate-string {:jsonrpc "2.0" :id 2 :method "tools/list" :params {}})
           resp (first (run-requests [req]))]
       (is (= 2 (:id resp)))
-      (is (= 18 (count (get-in resp [:result :tools])))))))
+      (is (= 19 (count (get-in resp [:result :tools])))))))
 
 (deftest tools-call-portfolio-summary-test
   (testing "tools/call portfolio_summary returns content"

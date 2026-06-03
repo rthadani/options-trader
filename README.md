@@ -35,21 +35,31 @@ so SEC filings fetches identify themselves correctly.
 # agents/, skills/}, runtime-pi/mcp.json), and runs DB migrations.
 bb install
 
-# Launch the TUI. Prints which config root it's using, and refuses to
-# launch (with an install hint) if you haven't run `bb install` yet.
+# Launch the TUI against paper TWS (port 7497, default).
 bb run-tui
+
+# Launch against LIVE TWS (port 7496):
+bb run-tui --profile prod
 
 # Use a different config root for this run only:
 OPTIONS_TRADER_CONFIG_DIR=/tmp/sandbox bb install   # seed there
 OPTIONS_TRADER_CONFIG_DIR=/tmp/sandbox bb run-tui   # launch against it
 
 # Bypass the wrapper:
-clojure -M:run
+clojure -M:run --profile prod
 
-# Headless refresh tasks (cron-safe via bin/refresh):
+# Headless data refresh — single JVM, single IB connection, parallel where safe:
+bb refresh-data                              # everything for sp500 (default)
+bb refresh-data --only fundamentals          # only one phase
+bb refresh-data --only daily,news -u sp500   # multiple phases, named universe
+bb refresh-data --symbols XEL,XYL,YUM        # subset of symbols, all phases
+bb refresh-data --parallelism 8              # cap concurrent IB requests
+
+# Per-phase CLI (also used by cron):
+clojure -M:cli refresh-all          # everything in one JVM
 clojure -M:cli refresh-daily        # bars (daily) + indicator recompute
 clojure -M:cli refresh-intraday     # bars (intraday)
-clojure -M:cli refresh-news         # news headlines + sentiment
+clojure -M:cli refresh-news         # news headlines + sentiment (K-score from BRFG)
 clojure -M:cli refresh-fundamentals # SEC EDGAR fundamentals + ratios
 clojure -M:cli refresh-filings      # 10-K/Q/8-K/13D/G filings list
 clojure -M:cli refresh-universes    # S&P 500 / NDX / Mag7 membership
@@ -77,8 +87,13 @@ or touched.
 │                                              of the agent's system prompt)
 ├── indicators.edn                             YOUR indicator specs
 ├── screens/                                   YOUR .screen files
+├── scope-sessions.edn                         per-scope claude+pi session ids
+├── tui-prefs.edn                              active agent / model / provider
+├── input-history.edn                          ↑/↓ recall, 500-line sliding
 ├── runtime-claude/                            CLAUDE_CONFIG_DIR for claude
 │   ├── settings.json                          MCP server + permissions
+│   ├── .credentials.json                      symlink → ~/.claude/.credentials.json
+│   │                                          (carries your Pro/Max login)
 │   ├── agents/                                sub-agent definitions
 │   │   ├── options-strategist.md
 │   │   ├── earnings-preview.md
@@ -111,11 +126,14 @@ message to the active agent.
 | `/quit` `/exit` `/q` | Exit the TUI |
 | `/help` | Print this list |
 | `/connect` `/disconnect` | TWS connection lifecycle |
-| `/refresh` | Re-read positions + account summary from the DB |
+| `/refresh` `/refresh-portfolio` `/refresh-positions` | Pull positions live from IB if connected, else reload from the DB |
+| `/quote <SYM>` `/dq <SYM>` | Live detailed quote — bid/ask/last/range, day volume + 14d avg, VWAP, put/call ratios |
+| `/option-quote <SYM> <YYYYMMDD> <STRIKE> <C\|P>` `/oq …` | Live option snapshot — bid/ask/last + IV + greeks (Δ Γ Θ ν) + underlying price |
+| `/stream-stats` | Diagnostic counters for the live portfolio/PnL streams |
 | `/reload-screens` | Rescan `<config>/screens/` into the screens table |
 | `/reload-indicators` | Validate `<config>/indicators.edn` |
-| `/model [provider:id]` | Show or switch model. `/model claude:claude-opus-4-5`, `/model ollama:qwen2.5-coder`, `/model kimi:kimi-k2.5` |
-| `/agent [pi\|claude]` | Switch active agent |
+| `/model [provider:id]` | Show or switch model. `/model claude:claude-sonnet-4-6`, `/model moonshotai/kimi-k2.5`, `/model ollama:qwen2.5-coder` |
+| `/agent [pi\|claude]` | Switch active agent. Persisted across restarts in `<config>/tui-prefs.edn` |
 | `/clear-investigation` | Return to the `:scratch` scope |
 | `/reset` | Drop both claude and pi session ids for the current scope (forces fresh threads next message) |
 | `/sessions` | List tracked scope → session bindings with token counts |
@@ -134,8 +152,10 @@ message to the active agent.
 | `/screens` | "List the screens available using the list_screens tool." | `list_screens` |
 | `/run <screen> [args]` | "Run the '<screen>' screen using the run_screen tool…" | `run_screen` |
 
-Everything else you type (no leading slash) is sent verbatim to the active
-agent, which can reach for any of the 18 MCP tools (see below).
+An unknown slash command (anything not in the tables above) is forwarded to
+the active agent verbatim — claude's own `/login`, `/cost`, etc. work
+unchanged. A plain message (no leading slash) is also sent to the agent,
+which can reach for any of the 19 MCP tools (see below).
 
 ---
 
@@ -152,16 +172,51 @@ across restarts**:
   from on-disk session storage.
 - Scope → session bindings are persisted to disk (`scope-sessions.edn`),
   so threads survive TUI restarts.
+- Active agent / model / provider are persisted to `tui-prefs.edn`, so the
+  next launch comes up in the same configuration.
+- Input history is persisted to `input-history.edn`; ↑/↓ recalls previous
+  prompts across sessions (up to 500 lines, sliding).
 - `/reset` drops the current scope's session ids (token counters survive).
 - `/clear-investigation` returns to `:scratch` (other scopes untouched).
+
+Assistant messages render with markdown — bold, italics, headers, fenced
+code, and tables (Unicode box-drawing). Long output wraps inside the chat
+area; mouse wheel or ↑/↓ in chat focus scrolls. Esc cancels an in-flight
+agent request.
 
 To carry parallel research threads, just `/investigate <SYM>` between them.
 
 ---
 
+## Live portfolio streaming
+
+After `/connect` (or on launch when TWS is reachable), the TUI subscribes
+to three streams in parallel:
+
+1. **`reqAccountUpdates`** — initial position bulk + continuous per-position
+   `updatePortfolio` events.
+2. **`reqPnL`** (account-level) — live daily / unrealized / realized P&L
+   for the whole account. Surfaces as the footer "Day:" field.
+3. **`reqPnLSingle`** per held position — per-position live market value
+   that ticks regardless of `updatePortfolio`'s stinginess. This is what
+   keeps the "Mkt" column moving when `updatePortfolio` rate-limits itself.
+
+The portfolio header shows `stream: live` / `Ns ago` / `stale` so you can
+verify at a glance that updates are flowing. A health watchdog reads the
+TWS socket every 2 s and corrects the `TWS:` indicator within one cycle
+of any silent drop. If the stream goes stale for ≥45 s the watchdog
+re-subscribes silently.
+
+`/stream-stats` prints the per-event-type counters and the timestamp of
+the last update — useful when "Mkt isn't updating" turns out to be IB
+sending the same value repeatedly (no price movement) vs. an actual
+plumbing failure.
+
+---
+
 ## Doing research
 
-The agent has 18 MCP tools and the runtime system prompt
+The agent has 19 MCP tools and the runtime system prompt
 (`resources/runtime/CLAUDE.md`) telling it when to reach for each. Typical
 flow:
 
@@ -181,11 +236,16 @@ flow:
 |---|---|
 | Portfolio | `portfolio_summary`, `place_order` (gated), `cancel_order` (gated) |
 | Screening | `list_screens`, `run_screen`, `run_sql`, `get_indicators` |
-| Market data | `fetch_option_chain`, `fetch_option_quote` |
+| Market data | `fetch_quote`, `fetch_option_chain`, `fetch_option_quote` |
 | Filings (EDGAR) | `fetch_filings`, `fetch_filing_body`, `fetch_filing_item`, `fetch_xbrl_facts`, `fetch_corporate_actions` |
 | Fundamentals | `fetch_fundamentals`, `fetch_earnings_history` |
 | News / sentiment | `fetch_news` |
 | Short interest | `fetch_short_interest` |
+
+`fetch_quote` is the broad single-symbol snapshot: live IB bid/ask/last/
+range merged with DB-derived 14-day avg volume, intraday VWAP, and
+put/call OI + volume ratios from `latest_indicators`. The agent reaches
+for it on any "what's X trading at" question.
 
 `run_sql` is the escape hatch: when no fetcher fits, the agent writes raw
 DuckDB SQL against the warehouse. The `get_indicators` tool reads
@@ -385,19 +445,35 @@ in-session agent — separate from the repo CLAUDE.md.
 
 ## Troubleshooting
 
-**`filings :unavailable` from `fetch_filings`** — SEC requires a User-Agent.
-Set `EDGAR_USER_AGENT="<name> <email>"` in your shell, or edit
-`resources/config.edn` and re-init.
+**Connected to paper instead of live** — `bb run-tui` defaults to
+`--profile dev` (port 7497, paper). Launch with `--profile prod` for live
+(port 7496). The first chat line confirms the mode:
+`✅ profile=prod  ib=127.0.0.1:7496  mode=live-tws`.
+
+**Mkt values not updating but stream looks alive** — most often "no price
+movement" rather than "broken pipe". Run `/stream-stats`, wait 30 s, run
+it again. If `portfolio` counter increases but values stay static, IB is
+sending updates with unchanged data. `reqPnLSingle` (auto-subscribed per
+position) provides the broker's authoritative live `value` and bypasses
+`updatePortfolio` rate-limiting.
+
+**Client-id collision (connects + disconnects in a loop)** — another
+process is using the TUI's default client-id (7). Set `TUI_CLIENT_ID=42
+bb run-tui --profile prod` to pick a different id without code edits.
+
+**`filings :unavailable` from `fetch_filings`** — SEC requires a
+User-Agent. Set `EDGAR_USER_AGENT="<name> <email>"` in your shell, or
+edit `resources/config.edn` and re-init.
 
 **`TWS unavailable` from CLI** — IB Gateway or TWS not running, or wrong
-port. Paper trading defaults to 7497; live to 7496. Check `resources/config.edn`.
+port. Paper = 7497, live = 7496. Check `resources/config.edn`.
 
-**Migration fails on startup** — the TUI refuses to start on an unmigrated
-schema. Check the printed error; if your local DB is from an older version
-that's incompatible, back it up and re-run `clojure -M:run init`.
+**Migration fails on startup** — the TUI refuses to start on an
+unmigrated schema. Check the printed error; if your local DB is from an
+older version that's incompatible, back it up and re-run `bb install`.
 
-**Tests** — `clojure -M:test` runs the kaocha suite. All tests should pass
-on a clean checkout.
+**Tests** — `clojure -M:test` runs the kaocha suite. All tests should
+pass on a clean checkout.
 
 **`/refresh-*` doesn't pick up edits to `indicators.edn`** — the engine
 reads the file on every refresh, so a fresh `clojure -M:cli refresh-daily`

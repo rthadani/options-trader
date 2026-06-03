@@ -23,7 +23,7 @@
    "fetch_news" "fetch_filings" "fetch_filing_body" "fetch_filing_item"
    "fetch_xbrl_facts" "fetch_corporate_actions" "fetch_fundamentals"
    "fetch_earnings_history" "fetch_short_interest"
-   "fetch_option_chain" "fetch_option_quote"])
+   "fetch_option_chain" "fetch_option_quote" "fetch_detailed_quote"])
 
 (defn load-registry
   "Load all tool schemas from resources/mcp/tools/*.json.
@@ -140,12 +140,56 @@
    "fetch_option_chain"      {:type   :research/fetch-option-chain
                                :keys   {:symbol identity :expiry_prefix :expiry_prefix}
                                :source :options-source}
-   "fetch_option_quote"      {:type   :research/fetch-option-quote
-                               :keys   {:ib-client :ib-client, :symbol identity
-                                        :strike identity, :expiry identity, :right identity
-                                        :exchange identity, :currency identity
-                                        :tick_types :tick_types}
-                               :source :options-source}})
+})
+
+;; `fetch_quote` + `fetch_option_quote` are dispatched directly in call-tool
+;; because they need the live IB client from ctx — the generic
+;; research-tool-specs `:keys` mechanism reads from `args`, not `ctx`, so
+;; passing :ib-client through the spec map doesn't work.
+(defn- handle-fetch-quote [ctx arguments]
+  (let [{:keys [ds ib-client]} ctx
+        sym (some-> (:symbol arguments) str clojure.string/trim
+                    clojure.string/upper-case)]
+    (cond
+      (clojure.string/blank? sym)
+      {:ok false :error :missing-symbol :message "symbol is required"}
+
+      :else
+      (actions/handle-action
+        {:type      :research/fetch-quote
+         :symbol    sym
+         :ib-client ib-client
+         :ds        ds}))))
+
+(defn- handle-fetch-option-quote [ctx arguments]
+  (let [{:keys [ib-client]} ctx
+        sym    (some-> (:symbol arguments) str clojure.string/trim
+                       clojure.string/upper-case)
+        strike (:strike arguments)
+        expiry (some-> (:expiry arguments) str clojure.string/trim)
+        right  (:right arguments)]
+    (cond
+      (nil? ib-client)
+      {:ok false :error :unavailable
+       :message "fetch_option_quote requires a live IB connection — MCP server couldn't open one"}
+
+      (or (clojure.string/blank? sym) (clojure.string/blank? expiry)
+          (nil? strike) (nil? right))
+      {:ok false :error :missing-args
+       :message "symbol, strike, expiry (YYYYMMDD), and right (C|P) are all required"}
+
+      :else
+      (actions/handle-action
+        {:type      :research/fetch-option-quote
+         :ib-client ib-client
+         :symbol    sym
+         :strike    strike
+         :expiry    expiry
+         :right     right
+         :exchange  (or (:exchange arguments) "SMART")
+         :currency  (or (:currency arguments) "USD")
+         :tick-types (:tick_types arguments)}))))
+
 
 (defn- build-research-request
   "Given a research-tool-spec entry, arguments, and ctx, build the
@@ -208,6 +252,12 @@
 
       (= "cancel_order" tool-name)
       (handle-cancel-order allow-orders? arguments)
+
+      (= "fetch_quote" tool-name)
+      (handle-fetch-quote ctx arguments)
+
+      (= "fetch_option_quote" tool-name)
+      (handle-fetch-option-quote ctx arguments)
 
       (contains? db-tool-handlers tool-name)
       ((get db-tool-handlers tool-name) ds arguments)

@@ -18,6 +18,7 @@
             [options-trader.tui.pi-proc :as pi-proc]
             [options-trader.tui.proc :as proc]
             [options-trader.tui.runtime-context :as rt-ctx]
+            [options-trader.data.quotes :as quotes]
             [options-trader.tui.ibkr :as tui-ibkr]
             [options-trader.tui.render :as render-ui]
             [options-trader.tui.slash :as opts-slash]
@@ -114,18 +115,21 @@
     (case t
       "assistant"
       (do
+        ;; Thinking stays out of chat (would flood). Tool calls go INTO chat
+        ;; so silent tool failures aren't invisible — that was the actual
+        ;; bug behind "agent stops mid-response with no output".
         (doseq [th (thinking-blocks content)]
           (st/append-activity! :thinking th)
           (a/>!! refresh-chan :refresh))
         (doseq [tu (tool-use-blocks content)]
-          (st/append-activity! :tool (tool-summary tu))
+          (st/append-chat! :tool (tool-summary tu))
           (a/>!! refresh-chan :refresh))
         (doseq [t (text-blocks content)]
           (st/append-message! :assistant t)
           (a/>!! refresh-chan :refresh)))
       "result"
       (when (:is_error ev)
-        (st/append-activity! :system (str "claude error: " (:error ev "unknown")))
+        (st/append-chat! :system (str "claude error: " (:error ev "unknown")))
         (a/>!! refresh-chan :refresh))
       nil)))
 
@@ -143,13 +147,17 @@
         (a/>!! refresh-chan :refresh))
 
     :tool
+    ;; Tool starts + ends BOTH go to chat as :tool so the user can see what
+    ;; the agent attempted and whether each call succeeded. Errors used to
+    ;; route to :activity (invisible) and the agent would silently stall
+    ;; after one tool failed.
     (let [label (if (:start? ev)
                   (str "🔧 " (:name ev) " "
                        (when-let [a (:args ev)]
                          (let [s (pr-str a)]
                            (if (> (count s) 60) (str (subs s 0 60) "…") s))))
                   (str (if (:error? ev) "✗ " "✓ ") (:name ev)))]
-      (st/append-activity! :tool label)
+      (st/append-chat! :tool label)
       (a/>!! refresh-chan :refresh))
 
     :usage
@@ -471,6 +479,133 @@
 (defn handle-disconnect [_args _ds]
   (tui-ibkr/disconnect!))
 
+(defn- fmt-num [v dec]
+  (if (number? v) (format (str "%." dec "f") (double v)) "—"))
+
+(defn handle-quote
+  "Live detailed quote for a stock symbol.
+   Usage:   /quote <SYMBOL>
+   Example: /quote MPWR"
+  [args _ds]
+  (cond
+    (not (tui-ibkr/connected?))
+    (st/append-chat! :system "no TWS connection — /connect first")
+
+    (empty? args)
+    (st/append-chat! :system "usage: /quote <SYMBOL>")
+
+    :else
+    (let [sym (str/upper-case (str (first args)))]
+      (st/append-chat! :system (str "fetching " sym " ..."))
+      (a/thread
+        (try
+          (let [t0   (System/currentTimeMillis)
+                conn (tui-ibkr/live-conn)
+                q    (quotes/detailed-quote conn @ds-atom sym :timeout-ms 6000)
+                dt   (- (System/currentTimeMillis) t0)]
+            (cond
+              (= :unavailable q)
+              (st/append-chat! :system
+                (str sym ": TWS rejected the snapshot (" dt "ms)"))
+
+              (= :timeout q)
+              (st/append-chat! :system
+                (str sym ": snapshot timed out after " dt "ms — "
+                     "could be no MD subscription, no IB slot free, or TWS not pushing"))
+
+              :else
+              (do
+                (st/append-chat! :system
+                  (str sym " [" dt "ms]"
+                       "  bid=" (fmt-num (:bid q) 2)
+                       " ask=" (fmt-num (:ask q) 2)
+                       " last=" (fmt-num (:last q) 2)
+                       " open=" (fmt-num (:open q) 2)
+                       " high=" (fmt-num (:high q) 2)
+                       " low=" (fmt-num (:low q) 2)
+                       "  mode=" (name (or (:data-mode q) :unknown))))
+                (st/append-chat! :system
+                  (str "volume: day=" (some-> (:day-volume q) long)
+                       " vwap=" (fmt-num (:day-vwap q) 2)
+                       " avg14d=" (some-> (:avg-volume-14d q) long)
+                       "  ratio=" (fmt-num (:volume-ratio q) 2)))
+                (st/append-chat! :system
+                  (str "put/call:  oi-ratio=" (fmt-num (:pc-oi-ratio q) 3)
+                       "  vol-ratio=" (fmt-num (:pc-vol-ratio q) 3))))))
+          (catch Throwable t
+            (st/append-chat! :system
+              (str sym ": quote failed — " (.getMessage t)))))))))
+
+(defn handle-option-quote
+  "Live snapshot of a single option contract.
+   Usage:   /option-quote <SYMBOL> <YYYYMMDD> <STRIKE> <C|P>
+   Example: /option-quote MPWR 20260619 800 C"
+  [args _ds]
+  (cond
+    (not (tui-ibkr/connected?))
+    (st/append-chat! :system
+      "no TWS connection — /connect first")
+
+    (< (count args) 4)
+    (st/append-chat! :system
+      "usage: /option-quote <SYMBOL> <YYYYMMDD> <STRIKE> <C|P>")
+
+    :else
+    (let [[sym expiry strike-s right] args
+          strike (try (Double/parseDouble strike-s) (catch Throwable _ nil))
+          right  (str/upper-case (str right))]
+      (if (or (not strike) (not (#{"C" "P"} right)))
+        (st/append-chat! :system "bad args — strike must be numeric, right must be C or P")
+        (do
+          (st/append-chat! :system
+            (str "fetching " sym " " expiry " " strike-s " " right " ..."))
+          (a/thread
+            (let [conn (tui-ibkr/live-conn)
+                  ;; Option snapshots, especially for deep-ITM strikes
+                  ;; after-hours, regularly take 8-15 s for TWS to package
+                  ;; greeks + return the terminal event.
+                  q    (quotes/option-quote conn
+                         {:symbol sym :expiry expiry :strike strike :right right}
+                         :timeout-ms 15000)]
+              (cond
+                (= :unavailable q)
+                (st/append-chat! :system "option quote unavailable (TWS rejected)")
+
+                (= :timeout q)
+                (st/append-chat! :system
+                  (str "option quote timed out — TWS may not be subscribed for "
+                       sym " options"))
+
+                :else
+                (do
+                  (st/append-chat! :system
+                    (str sym " " expiry " " (fmt-num strike 0) " " right
+                         "  ──  bid=" (fmt-num (:bid q) 2)
+                         " ask="     (fmt-num (:ask q) 2)
+                         " last="    (fmt-num (:last q) 2)
+                         " close="   (fmt-num (:close q) 2)
+                         " vol="     (or (some-> (:volume q) long) "—")
+                         "  mode="   (name (or (:data-mode q) :unknown))))
+                  (st/append-chat! :system
+                    (str "greeks (model):  IV=" (fmt-num (:iv q) 4)
+                         " Δ=" (fmt-num (:delta q) 4)
+                         " Γ=" (fmt-num (:gamma q) 4)
+                         " Θ=" (fmt-num (:theta q) 4)
+                         " ν=" (fmt-num (:vega q) 4)
+                         (when-let [u (:underlying-price q)]
+                           (str "  underlying=" (fmt-num u 2)))))
+                  (when (and (nil? (:bid q)) (nil? (:ask q)) (nil? (:last q)))
+                    (st/append-chat! :system
+                      "no live bid/ask/last — market closed or no orders on this strike; :close shown above is the previous-session close"))
+                  (doseq [w (:warnings q)]
+                    (st/append-chat! :system
+                      (str "warning " (:code w) ": " (:message w))))
+                  ;; Errors from TWS now surface — previously they were
+                  ;; silently dropped and you got a row of dashes.
+                  (doseq [e (:errors q)]
+                    (st/append-chat! :system
+                      (str "error " (:code e) ": " (:message e)))))))))))))
+
 (defn handle-stream-stats [_args _ds]
   (let [s    @st/state
         c    (get-in s [:stream :counters])
@@ -552,6 +687,10 @@
    "/reload-indicators"   handle-reload-indicators
    "/connect"             handle-connect
    "/disconnect"          handle-disconnect
+   "/quote"               handle-quote
+   "/dq"                  handle-quote
+   "/option-quote"        handle-option-quote
+   "/oq"                  handle-option-quote
    "/model"               handle-model
    "/agent"               handle-agent
    "/clear-investigation" handle-clear-investigation

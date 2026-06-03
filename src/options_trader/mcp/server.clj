@@ -1,10 +1,16 @@
 (ns options-trader.mcp.server
   (:require [options-trader.config       :as config]
             [options-trader.data.edgar   :as edgar]
+            [options-trader.data.ibkr    :as ibkr]
             [options-trader.db.duckdb    :as duckdb]
             [options-trader.mcp.protocol :as protocol]
             [options-trader.mcp.tools    :as tools])
   (:gen-class))
+
+(def ^:private mcp-client-id
+  "Distinct from the TUI (7) and the CLI (1) so the MCP server can hold its
+   own TWS connection without collision. Override with MCP_CLIENT_ID."
+  (or (some-> (System/getenv "MCP_CLIENT_ID") not-empty parse-long) 9))
 
 (defmulti tool-call :tool-name)
 (defmethod tool-call :default [{:keys [tool-name]}]
@@ -57,6 +63,16 @@
   (when-let [edgar-cfg (get-in cfg [:data-sources :edgar])]
     (edgar/set-default-source! (edgar/make-source edgar-cfg))))
 
+(defn- open-ib! [cfg]
+  (when-let [{:keys [host port]} (:ibkr cfg)]
+    (try
+      (let [c (ibkr/connect! host port mcp-client-id)]
+        (when (not= :unavailable c) c))
+      (catch Throwable t
+        (binding [*out* *err*]
+          (println "warning: MCP failed to open IB connection —" (.getMessage t)))
+        nil))))
+
 (defn -main [& _args]
   (let [profile (or (System/getenv "OPTIONS_TRADER_PROFILE") "dev")
         cfg     (try (config/load-config profile)
@@ -66,14 +82,21 @@
                        nil))]
     (when cfg
       (apply-edgar-source! cfg))
-    (let [rdr (java.io.BufferedReader. (java.io.InputStreamReader. System/in))
-          wtr (java.io.PrintWriter. System/out true)
-          ds  (when cfg
-                (try (duckdb/datasource cfg)
-                     (catch Throwable t
-                       (binding [*out* *err*]
-                         (println "warning: failed to open DB —" (.getMessage t)))
-                       nil)))
-          ctx (cond-> {}
-                ds (assoc :ds ds))]
+    (let [rdr       (java.io.BufferedReader. (java.io.InputStreamReader. System/in))
+          wtr       (java.io.PrintWriter. System/out true)
+          ds        (when cfg
+                      (try (duckdb/datasource cfg)
+                           (catch Throwable t
+                             (binding [*out* *err*]
+                               (println "warning: failed to open DB —" (.getMessage t)))
+                             nil)))
+          ;; The MCP server holds its OWN TWS connection (client-id 9 by
+          ;; default) so IB-backed tools (fetch_quote, fetch_option_quote,
+          ;; fetch_option_chain) work when the agent calls them. Without this
+          ;; they return :unavailable. The TUI keeps its own connection
+          ;; (client-id 7); the two coexist fine.
+          ib-client (when cfg (open-ib! cfg))
+          ctx       (cond-> {}
+                      ds        (assoc :ds ds)
+                      ib-client (assoc :ib-client ib-client))]
       (run-stdio-server rdr wtr ctx))))

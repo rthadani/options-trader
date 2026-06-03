@@ -16,6 +16,7 @@
             [options-trader.data.earnings     :as earnings]
             [options-trader.data.short-interest :as si]
             [options-trader.data.options      :as options]
+            [options-trader.data.quotes       :as quotes]
             [options-trader.data.ibkr         :as ibkr]))
 
 (def ^:private default-timeout-ms 15000)
@@ -191,28 +192,71 @@
                :else (-> (collapse-chain (:result events) expiry-prefix)
                          (assoc :symbol symbol)))}))
 
+(defmethod actions/handle-action :research/fetch-quote
+  [{:keys [ib-client ds symbol timeout-ms avg-window]
+    :or   {timeout-ms 8000 avg-window 14}}]
+  (cond
+    (str/blank? (str symbol))
+    {:ok false :error :missing-symbol :message "symbol is required"}
+
+    (or (nil? ib-client) (nil? ds))
+    {:ok false :error :unavailable
+     :message "fetch_quote requires a live IB connection and DuckDB datasource in ctx"}
+
+    :else
+    (let [q (try (quotes/detailed-quote ib-client ds symbol
+                                        :timeout-ms timeout-ms
+                                        :avg-window avg-window)
+                 (catch Throwable t {:error :exception :message (.getMessage t)}))]
+      (case q
+        :unavailable {:ok false :error :unavailable
+                      :message "TWS rejected the snapshot request"}
+        :timeout     {:ok false :error :timeout
+                      :message (str "no snapshot events within " timeout-ms "ms")}
+        (if (and (map? q) (:error q))
+          {:ok false :error (:error q) :message (:message q)}
+          {:ok true :result q})))))
+
+(defn- ->option-right
+  "Normalise an option side to the keyword form ib-re-actor's translation
+   table expects. Strings like \"P\"/\"Put\" silently translate to nil →
+   IB Contract.right ends up null → TWS rejects the request."
+  [r]
+  (case (some-> r str str/lower-case)
+    ("c" "call" ":call") :call
+    ("p" "put"  ":put")  :put
+    r))
+
 (defmethod actions/handle-action :research/fetch-option-quote
   [{:keys [ib-client symbol strike expiry right exchange currency tick-types
            timeout-ms]
     :or   {exchange "SMART" currency "USD" timeout-ms default-timeout-ms
            tick-types ibkr/all-generic-ticks}}]
-  (let [contract (ibkr/->contract
-                   {:symbol   symbol
-                    :sec-type "OPT"
-                    :last-trade-date-or-contract-month expiry
-                    :strike   (double strike)
-                    :right    right
-                    :exchange exchange
-                    :currency currency})
-        events (await-once
-                 (fn [cb]
-                   (if ib-client
-                     (ibkr/req-market-data-snapshot ib-client contract tick-types cb)
-                     :unavailable))
-                 timeout-ms)
-        quote  (cond
-                 (:error events) events
-                 :else           (ibkr/normalize-snapshot (:result events)))]
-    {:ok true
-     :result (merge {:symbol symbol :strike strike :expiry expiry :right right}
-                    quote)}))
+  (cond
+    (nil? ib-client)
+    {:ok false :error :no-ib-client
+     :message "fetch_option_quote needs an IB connection in ctx (MCP didn't open one)"}
+
+    :else
+    (let [right-kw  (->option-right right)
+          contract  (ibkr/->contract
+                      {:symbol   symbol
+                       :sec-type "OPT"
+                       :last-trade-date-or-contract-month (str expiry)
+                       :strike   (double strike)
+                       :right    right-kw
+                       :exchange exchange
+                       :currency currency
+                       :multiplier "100"})
+          events    (await-once
+                      (fn [cb]
+                        (ibkr/req-market-data-snapshot ib-client contract tick-types cb))
+                      timeout-ms)
+          quote     (cond
+                      (:error events) events
+                      :else           (ibkr/normalize-snapshot (:result events)))]
+      {:ok      true
+       :result  (merge {:symbol symbol :strike strike :expiry expiry :right right}
+                       quote)
+       :contract contract
+       :ib-connected? (boolean (ibkr/is-connected?))})))
