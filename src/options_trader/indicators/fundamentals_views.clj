@@ -7,34 +7,20 @@
    ratios that need price (P/E, FCF yield), then upsert the ratio columns
    onto latest_indicators. Symbols not in EDGAR (foreign ADRs, most ETFs)
    are skipped with a warning."
-  (:require [clojure.string                   :as str]
-            [cheshire.core                    :as json]
-            [next.jdbc                        :as jdbc]
-            [next.jdbc.result-set             :as rs]
+  (:require [cheshire.core                    :as json]
             [taoensso.timbre                  :as log]
-            [options-trader.data.fundamentals :as fund]))
+            [options-trader.data.fundamentals :as fund]
+            [options-trader.db.queries.indicators :as q]))
 
 ;;; ── Schema ──────────────────────────────────────────────────────────────────
 
 (def ^:private columns
-  [["pe_ratio"            "DOUBLE"]
-   ["earnings_yield"      "DOUBLE"]
-   ["price_to_book"       "DOUBLE"]
-   ["fcf_yield"           "DOUBLE"]
-   ["debt_to_equity"      "DOUBLE"]
-   ["current_ratio"       "DOUBLE"]
-   ["gross_margin"        "DOUBLE"]
-   ["operating_margin"    "DOUBLE"]
-   ["net_margin"          "DOUBLE"]
-   ["roe"                 "DOUBLE"]
-   ["revenue_growth_yoy"  "DOUBLE"]
-   ["net_income_growth_yoy" "DOUBLE"]
-   ["eps_growth_yoy"      "DOUBLE"]])
+  [:pe_ratio :earnings_yield :price_to_book :fcf_yield :debt_to_equity
+   :current_ratio :gross_margin :operating_margin :net_margin :roe
+   :revenue_growth_yoy :net_income_growth_yoy :eps_growth_yoy])
 
 (defn ensure-schema! [ds]
-  (doseq [[col t] columns]
-    (jdbc/execute! ds
-      [(str "ALTER TABLE latest_indicators ADD COLUMN IF NOT EXISTS " col " " t)])))
+  (q/ensure-double-columns! ds columns))
 
 ;;; ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -74,41 +60,15 @@
 
 ;;; ── DB I/O ──────────────────────────────────────────────────────────────────
 
-(defn- all-symbols [ds]
-  (->> (jdbc/execute! ds
-         ["SELECT DISTINCT symbol FROM bars_daily ORDER BY symbol"]
-         {:builder-fn rs/as-unqualified-lower-maps})
-       (map :symbol)))
-
-(defn- latest-close [ds sym]
-  (-> (jdbc/execute-one! ds
-        ["SELECT close FROM bars_daily WHERE symbol = ?
-            ORDER BY bar_date DESC LIMIT 1" sym]
-        {:builder-fn rs/as-unqualified-lower-maps})
-      :close))
+(defn- all-symbols    [ds]     (q/all-bars-daily-symbols ds))
+(defn- latest-close   [ds sym] (q/latest-close ds sym))
 
 (defn- persist-fundamentals! [ds sym period payload]
-  (jdbc/execute! ds
-    ["INSERT INTO fundamentals (symbol, period, fetched_at, data)
-        VALUES (?, ?, current_timestamp, ?)
-      ON CONFLICT (symbol, period) DO UPDATE SET
-        fetched_at = excluded.fetched_at,
-        data       = excluded.data"
-     sym period (json/generate-string payload)]))
+  (q/persist-fundamentals! ds {:symbol sym :period period
+                                :data   (json/generate-string payload)}))
 
 (defn- upsert-row! [ds sym values]
-  (let [present    (into {} (remove (comp nil? val) values))
-        cols       (mapv name (keys present))
-        vals       (vec (vals present))
-        set-clause (str/join ", " (map #(str % " = excluded." %) cols))
-        sql        (str "INSERT INTO latest_indicators (symbol, "
-                        (str/join ", " cols)
-                        ") VALUES (?, "
-                        (str/join ", " (repeat (count cols) "?"))
-                        ") ON CONFLICT (symbol) DO UPDATE SET "
-                        set-clause)]
-    (when (seq cols)
-      (jdbc/execute! ds (into [sql sym] vals)))))
+  (q/upsert-latest-row! ds sym (into {} (remove (comp nil? val) values))))
 
 ;;; ── Public entry point ──────────────────────────────────────────────────────
 

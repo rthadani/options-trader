@@ -7,6 +7,7 @@
             [options-trader.actions.core :as actions]
             ;; Registers research tool defmethods via actions/handle-action.
             [options-trader.actions.research]
+            [options-trader.db.queries.indicators :as qi]
             [options-trader.portfolio.core :as portfolio]
             [options-trader.screener.registry :as screener]))
 
@@ -71,12 +72,7 @@
   (if ds
     (let [syms (vec (:symbols args []))]
       (if (seq syms)
-        (let [ph   (str/join "," (repeat (count syms) "?"))
-              rows (jdbc/execute! ds
-                     (into [(str "SELECT * FROM latest_indicators WHERE symbol IN (" ph ")")]
-                           syms)
-                     {:builder-fn rs/as-unqualified-lower-maps})]
-          {:symbols syms :indicators rows})
+        {:symbols syms :indicators (qi/select-latest-indicators ds syms)}
         {:error "symbols list is empty" :indicators []}))
     (no-ds-error {:indicators []})))
 

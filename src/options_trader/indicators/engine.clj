@@ -3,10 +3,8 @@
    upserts results into latest_indicators (wide format, one row per symbol)."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.string :as str]
-            [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
             [options-trader.data.fundamentals :as fundamentals]
+            [options-trader.db.queries.indicators :as q]
             [options-trader.indicators.beta :as beta]
             [options-trader.indicators.earnings-views :as earnings-views]
             [options-trader.indicators.event-flags :as event-flags]
@@ -40,22 +38,18 @@
 
 (defn load-bars
   "Load bars_daily rows for symbol from ds, sorted ascending by date.
-   Returns maps with :bar_date (LocalDate), :time (epoch-ms), :open, :high, :low, :close, :volume."
+   Returns maps with :bar_date, :time (epoch-ms), :open, :high, :low,
+   :close, :volume."
   [ds symbol]
-  (let [rows (jdbc/execute! ds
-               ["SELECT bar_date, open, high, low, close, volume
-                 FROM bars_daily WHERE symbol = ? ORDER BY bar_date ASC"
-                symbol]
-               {:builder-fn rs/as-unqualified-lower-maps})]
-    (mapv (fn [r]
-            {:bar_date (:bar_date r)
-             :time     (local-date->epoch-ms (:bar_date r))
-             :open     (double (or (:open r) 0.0))
-             :high     (double (or (:high r) 0.0))
-             :low      (double (or (:low r) 0.0))
-             :close    (double (or (:close r) 0.0))
-             :volume   (long   (or (:volume r) 0))})
-          rows)))
+  (mapv (fn [r]
+          {:bar_date (:bar_date r)
+           :time     (local-date->epoch-ms (:bar_date r))
+           :open     (double (or (:open r) 0.0))
+           :high     (double (or (:high r) 0.0))
+           :low      (double (or (:low r) 0.0))
+           :close    (double (or (:close r) 0.0))
+           :volume   (long   (or (:volume r) 0))})
+        (q/load-bars-daily ds symbol)))
 
 ;;; ── Indicator construction ──────────────────────────────────────────────────
 
@@ -228,66 +222,30 @@
 
 ;;; ── Schema helpers ──────────────────────────────────────────────────────────
 
-(defn- ensure-column!
-  "ALTER TABLE latest_indicators ADD COLUMN IF NOT EXISTS <col> DOUBLE."
-  [ds col-kw]
-  (jdbc/execute! ds
-    [(str "ALTER TABLE latest_indicators ADD COLUMN IF NOT EXISTS "
-          (name col-kw) " DOUBLE")]))
+(defn- ensure-column! [ds col-kw]
+  (q/ensure-double-columns! ds [col-kw]))
 
-(defn- ensure-composite-column!
-  "ALTER TABLE latest_indicators ADD COLUMN IF NOT EXISTS <col> BOOLEAN|VARCHAR."
-  [ds spec]
-  (let [col      (:column spec)
-        sql-type (case (:kind spec)
+(defn- ensure-composite-column! [ds spec]
+  (let [sql-type (case (:kind spec)
                    (:ttm-squeeze :mass-reversal) "BOOLEAN"
                    "VARCHAR")]
-    (jdbc/execute! ds
-      [(str "ALTER TABLE latest_indicators ADD COLUMN IF NOT EXISTS "
-            (name col) " " sql-type)])))
+    (q/ensure-column-with-type! ds :latest_indicators (:column spec) sql-type)))
 
-(defn- upsert-row!
-  "INSERT one wide row keyed by symbol; ON CONFLICT (symbol) DO UPDATE."
-  [ds symbol values]
-  (let [col-names  (mapv name (keys values))
-        col-vals   (vec (vals values))
-        set-clause (str/join ", " (map #(str % " = excluded." %) col-names))
-        sql (str "INSERT INTO latest_indicators (symbol, "
-                 (str/join ", " col-names)
-                 ") VALUES (?, "
-                 (str/join ", " (repeat (count col-names) "?"))
-                 ") ON CONFLICT (symbol) DO UPDATE SET "
-                 set-clause)]
-    (jdbc/execute! ds (into [sql symbol] col-vals))))
+(defn- upsert-row! [ds symbol values]
+  (q/upsert-latest-row! ds symbol values))
 
 ;;; ── History persistence ─────────────────────────────────────────────────────
 
-(defn- insert-history!
-  "Insert one indicator value into indicator_history; ignore duplicate (symbol, indicator, ind_date)."
-  [ds symbol indicator-key ind-date value]
-  (jdbc/execute! ds
-    ["INSERT INTO indicator_history (symbol, indicator, ind_date, value) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING"
-     symbol indicator-key ind-date value]))
+(defn- insert-history! [ds symbol indicator-key ind-date value]
+  (q/insert-indicator-history!
+    ds {:symbol symbol :indicator indicator-key
+        :ind-date ind-date :value value}))
 
 ;;; ── Percentile rank ─────────────────────────────────────────────────────────
 
-(defn- compute-percentile!
-  "PERCENT_RANK of the latest value for indicator over trailing n-days window in DuckDB.
-   Returns nil when no history rows exist."
-  [ds symbol indicator-key n-days]
-  (let [sql (str "WITH w AS ("
-                 "  SELECT value, ind_date,"
-                 "         PERCENT_RANK() OVER (ORDER BY value) AS pr"
-                 "  FROM indicator_history"
-                 "  WHERE symbol = ? AND indicator = ?"
-                 "    AND ind_date >= ("
-                 "      SELECT MAX(ind_date) - INTERVAL '" n-days " days'"
-                 "      FROM indicator_history WHERE symbol = ? AND indicator = ?"
-                 "    )"
-                 ") SELECT pr FROM w ORDER BY ind_date DESC LIMIT 1")
-        rows (jdbc/execute! ds [sql symbol indicator-key symbol indicator-key]
-                            {:builder-fn rs/as-unqualified-lower-maps})]
-    (:pr (first rows))))
+(defn- compute-percentile! [ds symbol indicator-key n-days]
+  (q/percent-rank-latest
+    ds {:symbol symbol :indicator indicator-key :n-days n-days}))
 
 ;;; ── Public entry point ──────────────────────────────────────────────────────
 

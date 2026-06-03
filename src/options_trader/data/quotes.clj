@@ -8,57 +8,28 @@
    Alpaca, etc.) can be swapped in by passing a different source:
      (md/make-source {:type :ibkr :ib-client conn})
      (md/make-source {:type :mock :responses {...}})"
-  (:require [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
-            [options-trader.data.market-data :as md]))
-
-(def ^:private as-lower {:builder-fn rs/as-unqualified-lower-maps})
+  (:require [options-trader.data.market-data :as md]
+            [options-trader.db.queries.quotes :as q]))
 
 ;;; ── DB-side metrics ───────────────────────────────────────────────────────
 
 (defn avg-volume
-  "Trailing N-day average daily volume from bars_daily. Uses the most recent
-   N completed bars (today's bar may or may not be present)."
+  "Trailing N-day average daily volume from bars_daily."
   [ds symbol n-days]
-  (-> (jdbc/execute-one! ds
-        [(str "SELECT AVG(volume) AS avg FROM ("
-              "  SELECT volume FROM bars_daily WHERE symbol = ?"
-              "    ORDER BY bar_date DESC LIMIT ?)")
-         symbol n-days]
-        as-lower)
-      :avg))
+  (q/avg-volume ds symbol n-days))
 
 (defn pc-ratios
-  "Read the latest put_call_oi_ratio and put_call_volume_ratio for symbol
-   from latest_indicators (populated by indicators.option-chain-agg).
-   Returns {:pc-oi-ratio nil-or-double :pc-vol-ratio nil-or-double}."
+  "Latest put_call_oi_ratio and put_call_volume_ratio for symbol from
+   latest_indicators. Returns {:pc-oi-ratio nil-or-double
+   :pc-vol-ratio nil-or-double}."
   [ds symbol]
-  (let [row (jdbc/execute-one! ds
-              ["SELECT put_call_oi_ratio AS oi, put_call_volume_ratio AS vol
-                  FROM latest_indicators WHERE symbol = ?" symbol]
-              as-lower)]
-    {:pc-oi-ratio  (:oi row)
-     :pc-vol-ratio (:vol row)}))
+  (q/pc-ratios ds symbol))
 
 (defn- vwap-from-bars-intraday
-  "Today's VWAP from bars_intraday: Σ((H+L+C)/3 × V) / Σ V. Returns nil
-   when there are no rows for today."
+  "Today's VWAP from bars_intraday: Σ((H+L+C)/3 × V) / Σ V. nil when no
+   rows for today."
   [ds symbol]
-  (try
-    (let [row (jdbc/execute-one! ds
-                ["SELECT
-                    SUM(((high + low + close) / 3.0) * volume) AS num,
-                    SUM(volume)                                AS den
-                  FROM bars_intraday
-                  WHERE symbol = ?
-                    AND bar_ts >= CURRENT_DATE
-                    AND volume IS NOT NULL AND volume > 0" symbol]
-                as-lower)
-          num (:num row)
-          den (:den row)]
-      (when (and (number? num) (number? den) (pos? den))
-        (double (/ num den))))
-    (catch Throwable _ nil)))
+  (try (q/vwap-from-bars-intraday ds symbol) (catch Throwable _ nil)))
 
 (defn- resolve-vwap
   "Three-fallback VWAP: snapshot RT_VOLUME → bars_intraday computation →

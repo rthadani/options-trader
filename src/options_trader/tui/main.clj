@@ -11,6 +11,7 @@
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
             [options-trader.data.ibkr :as ibkr]
+            [options-trader.db.queries.portfolio :as qp]
             [options-trader.paths :as paths]
             [options-trader.portfolio.core :as portfolio]
             [options-trader.tui.conversation :as conv]
@@ -67,15 +68,8 @@
 
 (defn default-account-id [ds]
   (or (ibkr/default-account)
-      (-> (jdbc/execute! ds
-            ["SELECT DISTINCT account FROM positions LIMIT 1"]
-            {:builder-fn rs/as-unqualified-lower-maps})
-          first :account)
-      (-> (jdbc/execute! ds
-            ["SELECT account FROM account_summary
-              ORDER BY fetched_at DESC LIMIT 1"]
-            {:builder-fn rs/as-unqualified-lower-maps})
-          first :account)))
+      (qp/default-account-from-positions ds)
+      (qp/default-account-from-summary   ds)))
 
 (defn refresh-portfolio! [ds]
   (let [account-id (or (:account-id @st/state)

@@ -9,6 +9,7 @@
             [options-trader.data.news        :as news]
             [options-trader.data.edgar       :as edgar]
             [options-trader.data.fundamentals :as fundamentals]
+            [options-trader.db.queries.refresh :as q]
             [options-trader.indicators.engine :as indicators]
             [options-trader.portfolio.core   :as portfolio])
   (:import [java.time LocalDate LocalDateTime Instant ZoneId Duration]
@@ -26,24 +27,15 @@
 
 ;;; ── refresh_log row helpers ────────────────────────────────────────────────
 
-(defn- next-log-id [ds]
-  (-> (jdbc/execute-one! ds
-        ["SELECT COALESCE(MAX(id), 0) + 1 AS n FROM refresh_log"] as-lower)
-      :n))
-
 (defn- log-start! [ds task symbol]
-  (let [id (next-log-id ds)]
-    (jdbc/execute-one! ds
-      ["INSERT INTO refresh_log (id, task, symbol, started_at, status)
-        VALUES (?, ?, ?, ?, 'running')"
-       id (name task) symbol (now-ts)])
+  (let [id (q/next-refresh-log-id ds)]
+    (q/insert-refresh-log! ds {:id id :task (name task)
+                                :symbol symbol :started-at (now-ts)})
     id))
 
 (defn- log-finish! [ds id status error]
-  (jdbc/execute-one! ds
-    ["UPDATE refresh_log SET finished_at = ?, status = ?, error = ?
-      WHERE id = ?"
-     (now-ts) status error id]))
+  (q/finish-refresh-log! ds {:id id :status status :error error
+                              :finished-at (now-ts)}))
 
 (defmacro with-log [ds task symbol & body]
   `(let [id#    (log-start! ~ds ~task ~symbol)
@@ -183,10 +175,7 @@
 ;;; ── Bars (daily) — incremental ─────────────────────────────────────────────
 
 (defn latest-bar-date [ds sym]
-  (some-> (jdbc/execute-one! ds
-            ["SELECT MAX(bar_date) AS d FROM bars_daily WHERE symbol = ?" sym]
-            as-lower)
-          :d))
+  (q/latest-bar-date ds sym))
 
 (defn duration-for-gap [last-d]
   (if (nil? last-d)
@@ -209,14 +198,7 @@
                                (:open b) (:high b) (:low b) (:close b)
                                (or (:volume b) 0)]))))
                   vec)]
-    (when (seq rows)
-      (jdbc/execute-batch! ds
-        "INSERT INTO bars_daily (symbol, bar_date, open, high, low, close, volume)
-         VALUES (?,?,?,?,?,?,?)
-         ON CONFLICT (symbol, bar_date) DO UPDATE SET
-           open=excluded.open, high=excluded.high, low=excluded.low,
-           close=excluded.close, volume=excluded.volume" rows {}))
-    (count rows)))
+    (q/insert-bars-daily-batch! ds rows)))
 
 (defn refresh-bars-daily!
   [{:keys [conn ds symbols timeout-ms compute-indicators?]
@@ -254,11 +236,7 @@
 ;;; ── Bars (intraday) — incremental ──────────────────────────────────────────
 
 (defn latest-intraday-ts [ds sym bar-size]
-  (some-> (jdbc/execute-one! ds
-            ["SELECT MAX(bar_ts) AS t FROM bars_intraday
-              WHERE symbol = ? AND bar_size = ?" sym bar-size]
-            as-lower)
-          :t))
+  (q/latest-intraday-ts ds sym bar-size))
 
 (defn intraday-duration-for-gap [last-ts bar-size]
   (if (nil? last-ts)
@@ -294,14 +272,7 @@
                                (:open b) (:high b) (:low b) (:close b)
                                (or (:volume b) 0)]))))
                   vec)]
-    (when (seq rows)
-      (jdbc/execute-batch! ds
-        "INSERT INTO bars_intraday (symbol, bar_ts, bar_size, open, high, low, close, volume)
-         VALUES (?,?,?,?,?,?,?,?)
-         ON CONFLICT (symbol, bar_ts, bar_size) DO UPDATE SET
-           open=excluded.open, high=excluded.high, low=excluded.low,
-           close=excluded.close, volume=excluded.volume" rows {}))
-    (count rows)))
+    (q/insert-bars-intraday-batch! ds rows)))
 
 (defn refresh-bars-intraday!
   [{:keys [conn ds symbols bar-size timeout-ms]
@@ -326,10 +297,7 @@
 ;;; ── News (headlines + sentiment) — incremental ─────────────────────────────
 
 (defn latest-news-published [ds sym]
-  (some-> (jdbc/execute-one! ds
-            ["SELECT MAX(published_at) AS t FROM news WHERE symbol = ?" sym]
-            as-lower)
-          :t))
+  (q/latest-news-published ds sym))
 
 (defn news-start-date-for-gap [last-ts]
   (if (nil? last-ts)
@@ -357,14 +325,7 @@
                                sent
                                (json/generate-string h)]))))
                   vec)]
-    (when (seq rows)
-      (jdbc/execute-batch! ds
-        "INSERT INTO news (id, symbol, title, url, source, published_at, sentiment, data)
-         VALUES (?,?,?,?,?,?,?,?)
-         ON CONFLICT (id) DO UPDATE SET
-           title=excluded.title, url=excluded.url,
-           sentiment=excluded.sentiment, data=excluded.data" rows {}))
-    (count rows)))
+    (q/insert-news-batch! ds rows)))
 
 (defn refresh-news!
   [{:keys [conn ds symbols params timeout-ms]
@@ -404,10 +365,7 @@
 ;;; ── Filings (EDGAR) — incremental ──────────────────────────────────────────
 
 (defn latest-filing-date [ds sym]
-  (some-> (jdbc/execute-one! ds
-            ["SELECT MAX(filed_at) AS d FROM filings WHERE symbol = ?" sym]
-            as-lower)
-          :d))
+  (q/latest-filing-date ds sym))
 
 (defn filings-start-date-for-gap [last-d]
   (cond
@@ -425,14 +383,7 @@
                              (some-> (:period f) ->iso-date)
                              (json/generate-string f)])))
                   vec)]
-    (when (seq rows)
-      (jdbc/execute-batch! ds
-        "INSERT INTO filings (accession, symbol, cik, form_type, filed_at, period, data)
-         VALUES (?,?,?,?,?,?,?)
-         ON CONFLICT (accession) DO UPDATE SET
-           form_type=excluded.form_type, filed_at=excluded.filed_at,
-           period=excluded.period, data=excluded.data" rows {}))
-    (count rows)))
+    (q/insert-filings-batch! ds rows)))
 
 (defn refresh-filings!
   [{:keys [ds symbols params] :or {params {}}}]
@@ -450,37 +401,23 @@
 
 ;;; ── Universes ──────────────────────────────────────────────────────────────
 
-(defn- current-members [ds u]
-  (->> (jdbc/execute! ds
-         ["SELECT symbol FROM universe_members WHERE universe = ?" u]
-         as-lower)
-       (map :symbol)
-       set))
+(defn- current-members [ds u] (q/current-members ds u))
 
 (defn- log-drift! [ds u action sym]
-  (let [id (-> (jdbc/execute-one! ds
-                 ["SELECT COALESCE(MAX(id), 0) + 1 AS n FROM universe_drift_log"]
-                 as-lower) :n)]
-    (jdbc/execute-one! ds
-      ["INSERT INTO universe_drift_log (id, universe, symbol, action)
-        VALUES (?, ?, ?, ?)" id u sym action])))
+  (let [id (q/next-drift-id ds)]
+    (q/insert-drift! ds {:id id :universe u :symbol sym :action action})))
 
 (defn- sync-universe! [ds u tickers]
   (let [prev (current-members ds u)
         next (set tickers)
         added   (clojure.set/difference next prev)
         removed (clojure.set/difference prev next)]
-    (jdbc/execute-one! ds
-      ["INSERT INTO universes (name, description) VALUES (?, ?)
-        ON CONFLICT (name) DO NOTHING" u (str u " (auto)")])
+    (q/upsert-universe! ds {:name u :description (str u " (auto)")})
     (doseq [s added]
-      (jdbc/execute-one! ds
-        ["INSERT INTO universe_members (universe, symbol) VALUES (?, ?)
-          ON CONFLICT DO NOTHING" u s])
+      (q/add-member!  ds {:universe u :symbol s})
       (log-drift! ds u "added" s))
     (doseq [s removed]
-      (jdbc/execute-one! ds
-        ["DELETE FROM universe_members WHERE universe = ? AND symbol = ?" u s])
+      (q/remove-member! ds {:universe u :symbol s})
       (log-drift! ds u "removed" s))
     {:added (count added) :removed (count removed) :total (count next)}))
 

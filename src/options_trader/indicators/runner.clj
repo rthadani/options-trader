@@ -6,9 +6,7 @@
    against them."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.string :as str]
-            [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
+            [options-trader.db.queries.indicators :as q]
             [options-trader.indicators.ta4j :as ta4j]
             [taoensso.timbre :as log])
   (:import [java.time ZoneOffset]))
@@ -21,28 +19,17 @@
 (defn- load-bars
   "Load OHLCV rows for sym from bars_daily, sorted ascending by bar_date."
   [ds sym]
-  (let [rows (jdbc/execute! ds
-               ["SELECT bar_date, open, high, low, close, volume
-                 FROM bars_daily WHERE symbol = ? ORDER BY bar_date ASC"
-                sym]
-               {:builder-fn rs/as-unqualified-lower-maps})]
-    (mapv (fn [r]
-            {:bar_date (:bar_date r)
-             :time     (local-date->epoch-ms (:bar_date r))
-             :open     (double (or (:open r) 0.0))
-             :high     (double (or (:high r) 0.0))
-             :low      (double (or (:low r) 0.0))
-             :close    (double (or (:close r) 0.0))
-             :volume   (long   (or (:volume r) 0))})
-          rows)))
+  (mapv (fn [r]
+          {:bar_date (:bar_date r)
+           :time     (local-date->epoch-ms (:bar_date r))
+           :open     (double (or (:open r) 0.0))
+           :high     (double (or (:high r) 0.0))
+           :low      (double (or (:low r) 0.0))
+           :close    (double (or (:close r) 0.0))
+           :volume   (long   (or (:volume r) 0))})
+        (q/load-bars-daily ds sym)))
 
-(defn- all-symbols
-  "Return all distinct symbols present in bars_daily."
-  [ds]
-  (->> (jdbc/execute! ds
-         ["SELECT DISTINCT symbol FROM bars_daily ORDER BY symbol"]
-         {:builder-fn rs/as-unqualified-lower-maps})
-       (mapv :symbol)))
+(defn- all-symbols [ds] (q/all-bars-daily-symbols ds))
 
 ;;; ── Indicator computation ───────────────────────────────────────────────────
 
@@ -79,27 +66,10 @@
    declared in resources/indicators.edn.  Safe to call multiple times."
   [ds]
   (let [cfg (edn/read-string (slurp (io/resource "indicators.edn")))]
-    (doseq [spec (:indicators cfg)]
-      (jdbc/execute! ds
-        [(str "ALTER TABLE latest_indicators ADD COLUMN IF NOT EXISTS "
-              (name (:column spec)) " DOUBLE")]))))
+    (q/ensure-double-columns! ds (mapv :column (:indicators cfg)))))
 
-;;; ── Upsert ──────────────────────────────────────────────────────────────────
-
-(defn- upsert-row!
-  "INSERT one wide row keyed on symbol; ON CONFLICT (symbol) DO UPDATE SET each col."
-  [ds sym values]
-  (when (seq values)
-    (let [cols       (mapv name (keys values))
-          vals       (vec (vals values))
-          set-clause (str/join ", " (map #(str % " = excluded." %) cols))
-          sql        (str "INSERT INTO latest_indicators (symbol, "
-                          (str/join ", " cols)
-                          ") VALUES (?, "
-                          (str/join ", " (repeat (count cols) "?"))
-                          ") ON CONFLICT (symbol) DO UPDATE SET "
-                          set-clause)]
-      (jdbc/execute! ds (into [sql sym] vals)))))
+(defn- upsert-row! [ds sym values]
+  (q/upsert-latest-row! ds sym values))
 
 ;;; ── Public API ──────────────────────────────────────────────────────────────
 

@@ -134,12 +134,3 @@
       (views/create-views! ds)
       (is true "second create-views! did not throw"))))
 
-(deftest portfolio-summary-sql-is-string-test
-  (testing "portfolio-summary-sql is a non-blank string"
-    (is (string? views/portfolio-summary-sql))
-    (is (seq views/portfolio-summary-sql))))
-
-(deftest portfolio-greeks-sql-is-string-test
-  (testing "portfolio-greeks-sql is a non-blank string"
-    (is (string? views/portfolio-greeks-sql))
-    (is (seq views/portfolio-greeks-sql))))

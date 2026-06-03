@@ -1,8 +1,7 @@
 (ns options-trader.portfolio.core
   (:require [clojure.core.async :as async]
-            [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
-            [options-trader.data.ibkr :as ibkr]))
+            [options-trader.data.ibkr :as ibkr]
+            [options-trader.db.queries.portfolio :as q]))
 
 (defprotocol IPortfolioStore
   (read-positions [store account-id])
@@ -43,57 +42,39 @@
 
 (defn- upsert-positions! [ds account-id pos-seq]
   (doseq [{:keys [symbol opt-right expiry strike qty avg-cost market-value unrealized-pnl]} pos-seq]
-    (jdbc/execute! ds
-      ["INSERT INTO positions
-          (account, symbol, opt_right, expiry, strike, quantity, avg_cost, market_val, unrealized, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
-        ON CONFLICT (account, symbol, opt_right, expiry, strike) DO UPDATE SET
-          quantity   = excluded.quantity,
-          avg_cost   = excluded.avg_cost,
-          market_val = excluded.market_val,
-          unrealized = excluded.unrealized,
-          updated_at = excluded.updated_at"
-       account-id
-       symbol
-       (or opt-right "")
-       (expiry->sql-date expiry)
-       (or strike 0.0)
-       qty
-       avg-cost
-       market-value
-       unrealized-pnl])))
+    (q/upsert-position! ds {:account     account-id
+                             :symbol      symbol
+                             :opt-right   (or opt-right "")
+                             :expiry      (expiry->sql-date expiry)
+                             :strike      (or strike 0.0)
+                             :quantity    qty
+                             :avg-cost    avg-cost
+                             :market-val  market-value
+                             :unrealized  unrealized-pnl})))
 
 (defn- upsert-account-summary! [ds account-id {:keys [net-liq cash buying-power day-pl]}]
   (when net-liq
-    (jdbc/execute! ds
-      ["INSERT INTO account_summary (account, fetched_at, net_liq, cash, buying_power, day_pl)
-        VALUES (?, current_timestamp, ?, ?, ?, ?)
-        ON CONFLICT (account, fetched_at) DO NOTHING"
-       account-id net-liq cash buying-power day-pl])))
+    (q/insert-account-summary! ds {:account      account-id
+                                    :net-liq      net-liq
+                                    :cash         cash
+                                    :buying-power buying-power
+                                    :day-pl       day-pl})))
 
 (defrecord JdbcStore [ds]
   IPortfolioStore
   (read-positions [_ account-id]
-    (->> (jdbc/execute! ds
-           ["SELECT symbol, opt_right, expiry, strike, quantity, avg_cost, market_val, unrealized
-             FROM positions WHERE account = ?" account-id]
-           {:builder-fn rs/as-unqualified-lower-maps})
-         (mapv (fn [r]
-                 {:symbol         (:symbol r)
-                  :opt-right      (or (:opt_right r) "")
-                  :expiry         (:expiry r)
-                  :strike         (or (:strike r) 0.0)
-                  :qty            (:quantity r)
-                  :avg-cost       (:avg_cost r)
-                  :market-value   (:market_val r)
-                  :unrealized-pnl (:unrealized r)}))))
+    (mapv (fn [r]
+            {:symbol         (:symbol r)
+             :opt-right      (or (:opt_right r) "")
+             :expiry         (:expiry r)
+             :strike         (or (:strike r) 0.0)
+             :qty            (:quantity r)
+             :avg-cost       (:avg_cost r)
+             :market-value   (:market_val r)
+             :unrealized-pnl (:unrealized r)})
+          (q/select-positions ds account-id)))
   (read-account-summary [_ account-id]
-    (when-let [row (first
-                     (jdbc/execute! ds
-                       ["SELECT net_liq, cash, buying_power, day_pl
-                         FROM account_summary WHERE account = ?
-                         ORDER BY fetched_at DESC LIMIT 1" account-id]
-                       {:builder-fn rs/as-unqualified-lower-maps}))]
+    (when-let [row (q/select-account-summary ds account-id)]
       {:net-liq      (:net_liq row)
        :cash         (:cash row)
        :buying-power (:buying_power row)
