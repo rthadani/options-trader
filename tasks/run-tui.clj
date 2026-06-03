@@ -22,11 +22,11 @@
       seeded?   (fs/exists? (str root "/runtime-claude/settings.json"))
       override? (some? (System/getenv "OPTIONS_TRADER_CONFIG_DIR"))]
   (println)
-  (println (str "[36mUsing config:[0m " root
-                (when override? " [33m(from $OPTIONS_TRADER_CONFIG_DIR)[0m")))
+  (println (str "\u001b[36m" "Using config:" "\u001b[0m" root
+                (when override? (str "\u001b[33m" "(from $OPTIONS_TRADER_CONFIG_DIR)" "\u001b[0m"))))
   (when-not seeded?
     (println)
-    (println "[33mConfig directory not initialized.[0m Run `bb install` first.")
+    (println (str "\u001b[33m" "Config directory not initialized." "\u001b[0m" "Run `bb install` first."))
     (System/exit 1))
   (println)
   (let [argv (vec *command-line-args*)

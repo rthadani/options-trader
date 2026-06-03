@@ -16,6 +16,7 @@
             [options-trader.data.earnings     :as earnings]
             [options-trader.data.short-interest :as si]
             [options-trader.data.options      :as options]
+            [options-trader.data.market-data  :as md]
             [options-trader.data.quotes       :as quotes]
             [options-trader.data.ibkr         :as ibkr]))
 
@@ -193,26 +194,27 @@
                          (assoc :symbol symbol)))}))
 
 (defmethod actions/handle-action :research/fetch-quote
-  [{:keys [ib-client ds symbol timeout-ms avg-window]
-    :or   {timeout-ms 8000 avg-window 14}}]
+  [{:keys [ib-client source ds symbol avg-window]
+    :or   {avg-window 14}}]
   (cond
     (str/blank? (str symbol))
     {:ok false :error :missing-symbol :message "symbol is required"}
 
-    (or (nil? ib-client) (nil? ds))
+    (nil? ds)
     {:ok false :error :unavailable
-     :message "fetch_quote requires a live IB connection and DuckDB datasource in ctx"}
+     :message "fetch_quote requires a DuckDB datasource in ctx"}
 
     :else
-    (let [q (try (quotes/detailed-quote ib-client ds symbol
-                                        :timeout-ms timeout-ms
-                                        :avg-window avg-window)
-                 (catch Throwable t {:error :exception :message (.getMessage t)}))]
+    (let [src (or source
+                  (when ib-client (md/make-source {:type :ibkr :ib-client ib-client}))
+                  (md/make-source {:type :unavailable}))
+          q   (try (quotes/detailed-quote src ds symbol :avg-window avg-window)
+                   (catch Throwable t {:error :exception :message (.getMessage t)}))]
       (case q
         :unavailable {:ok false :error :unavailable
-                      :message "TWS rejected the snapshot request"}
+                      :message "market-data source rejected the snapshot request"}
         :timeout     {:ok false :error :timeout
-                      :message (str "no snapshot events within " timeout-ms "ms")}
+                      :message "no snapshot events within the source's window"}
         (if (and (map? q) (:error q))
           {:ok false :error (:error q) :message (:message q)}
           {:ok true :result q})))))
@@ -228,35 +230,31 @@
     r))
 
 (defmethod actions/handle-action :research/fetch-option-quote
-  [{:keys [ib-client symbol strike expiry right exchange currency tick-types
-           timeout-ms]
-    :or   {exchange "SMART" currency "USD" timeout-ms default-timeout-ms
-           tick-types ibkr/all-generic-ticks}}]
-  (cond
-    (nil? ib-client)
-    {:ok false :error :no-ib-client
-     :message "fetch_option_quote needs an IB connection in ctx (MCP didn't open one)"}
+  [{:keys [ib-client source symbol strike expiry right exchange currency]
+    :or   {exchange "SMART" currency "USD"}}]
+  (let [src  (or source
+                  (when ib-client (md/make-source {:type :ibkr :ib-client ib-client}))
+                  (md/make-source {:type :unavailable}))
+        opts {:symbol symbol :expiry expiry :strike strike :right right
+              :exchange exchange :currency currency}
+        ;; Snapshot mode: TWS sends cached state + tick-snapshot-end. Reliable
+        ;; for prev-session close + bid/ask after-hours; greeks rarely arrive.
+        q0   (quotes/option-quote-snapshot src opts)
+        ;; Hand TWS the close prices and let it back out IV + greeks — works
+        ;; any time of day, no live market data needed.
+        q    (if (and (map? q0) (nil? (:iv q0)) (nil? (:delta q0)))
+               (let [calc (quotes/calc-option-greeks src opts)]
+                 (if (map? calc) (merge q0 calc) q0))
+               q0)]
+    (cond
+      (= :unavailable q)
+      {:ok false :error :unavailable
+       :message "market-data source rejected the OPT request"}
 
-    :else
-    (let [right-kw  (->option-right right)
-          contract  (ibkr/->contract
-                      {:symbol   symbol
-                       :sec-type "OPT"
-                       :last-trade-date-or-contract-month (str expiry)
-                       :strike   (double strike)
-                       :right    right-kw
-                       :exchange exchange
-                       :currency currency
-                       :multiplier "100"})
-          events    (await-once
-                      (fn [cb]
-                        (ibkr/req-market-data-snapshot ib-client contract tick-types cb))
-                      timeout-ms)
-          quote     (cond
-                      (:error events) events
-                      :else           (ibkr/normalize-snapshot (:result events)))]
-      {:ok      true
-       :result  (merge {:symbol symbol :strike strike :expiry expiry :right right}
-                       quote)
-       :contract contract
-       :ib-connected? (boolean (ibkr/is-connected?))})))
+      (= :timeout q)
+      {:ok false :error :timeout
+       :message "no snapshot end within the source's window"}
+
+      :else
+      {:ok     true
+       :result (merge {:symbol symbol :strike strike :expiry expiry :right right} q)})))

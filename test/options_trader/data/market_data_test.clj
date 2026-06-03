@@ -1,14 +1,18 @@
 (ns options-trader.data.market-data-test
   (:require [clojure.test :refer [deftest is testing]]
             [options-trader.data.market-data :as md])
-  (:import [options_trader.data.market_data MockMarketDataSource IbkrMarketDataSource]))
+  (:import [options_trader.data.market_data
+            IbkrMarketDataSource MockMarketDataSource UnavailableMarketDataSource]))
 
 (deftest make-source-default-returns-unavailable
   (testing "make-source with unknown type returns an UnavailableMarketDataSource"
     (let [src (md/make-source {:type :unknown})]
-      (is (= :unavailable (md/get-quote        src {} "" identity)))
-      (is (= :unavailable (md/subscribe-quotes src {} "" identity)))
-      (is (= :unavailable (md/snapshot         src {} "" identity))))))
+      (is (instance? UnavailableMarketDataSource src))
+      (is (= :unavailable (md/snapshot-stk src "AAPL")))
+      (is (= :unavailable (md/snapshot-opt src {:symbol "AAPL" :expiry "20260918" :strike 200 :right :call})))
+      (is (= :unavailable (md/stream-opt   src {:symbol "AAPL" :expiry "20260918" :strike 200 :right :call} 100)))
+      (is (= :unavailable (md/calc-iv      src {:symbol "AAPL" :expiry "20260918" :strike 200 :right :call
+                                                :option-price 3.5 :underlying-price 200.0}))))))
 
 (deftest make-source-mock-dispatch
   (testing "make-source :mock returns a MockMarketDataSource"
@@ -20,50 +24,39 @@
     (let [src (md/make-source {:type :ibkr :ib-client :stub-conn})]
       (is (instance? IbkrMarketDataSource src)))))
 
-(deftest mock-get-quote-returns-req-id
-  (testing "MockMarketDataSource.get-quote returns a positive integer req-id"
-    (let [src (MockMarketDataSource.)
-          id  (md/get-quote src {:symbol "AAPL"} "" identity)]
-      (is (pos? id)))))
+(deftest ibkr-source-without-client-is-unavailable
+  (testing "IbkrMarketDataSource with nil ib-client returns :unavailable everywhere"
+    (let [src (md/make-source {:type :ibkr :ib-client nil})]
+      (is (= :unavailable (md/snapshot-stk src "AAPL")))
+      (is (= :unavailable (md/snapshot-opt src {:symbol "AAPL" :expiry "20260918" :strike 200 :right :call})))
+      (is (= :unavailable (md/calc-iv      src {:symbol "AAPL" :expiry "20260918" :strike 200 :right :call
+                                                :option-price 3.5 :underlying-price 200.0}))))))
 
-(deftest mock-get-quote-invokes-callback
-  (testing "MockMarketDataSource.get-quote invokes callback with a result map"
-    (let [src    (MockMarketDataSource.)
-          result (atom nil)]
-      (md/get-quote src {:symbol "AAPL"} "" #(reset! result %))
-      (is (some? @result))
-      (is (= :mock-quote (:type @result))))))
+(deftest mock-returns-canned-snapshot
+  (testing "MockMarketDataSource returns the canned snapshot-stk response"
+    (let [src (md/make-mock-source
+                {:snapshot-stk {"AAPL" {:bid 200.10 :ask 200.15 :last 200.12}}})]
+      (is (= {:bid 200.10 :ask 200.15 :last 200.12}
+             (md/snapshot-stk src "AAPL")))
+      (is (= :unavailable (md/snapshot-stk src "MSFT"))))))
 
-(deftest mock-subscribe-quotes-returns-req-id
-  (testing "MockMarketDataSource.subscribe-quotes returns a positive integer req-id"
-    (let [src (MockMarketDataSource.)
-          id  (md/subscribe-quotes src {:symbol "MSFT"} "" identity)]
-      (is (pos? id)))))
+(deftest mock-returns-canned-opt-snapshot
+  (testing "MockMarketDataSource snapshot-opt keys off :symbol"
+    (let [src (md/make-mock-source
+                {:snapshot-opt {"MPWR" {:bid 1.20 :ask 1.50 :close 1.35}}})]
+      (is (= {:bid 1.20 :ask 1.50 :close 1.35}
+             (md/snapshot-opt src {:symbol "MPWR" :expiry "20260918"
+                                   :strike 1500 :right :put}))))))
 
-(deftest mock-subscribe-quotes-invokes-callback
-  (testing "MockMarketDataSource.subscribe-quotes invokes callback with a tick map"
-    (let [src    (MockMarketDataSource.)
-          result (atom nil)]
-      (md/subscribe-quotes src {:symbol "MSFT"} "" #(reset! result %))
-      (is (= :mock-tick (:type @result))))))
-
-(deftest mock-snapshot-returns-req-id
-  (testing "MockMarketDataSource.snapshot returns a positive integer req-id"
-    (let [src (MockMarketDataSource.)
-          id  (md/snapshot src {:symbol "SPY"} "" identity)]
-      (is (pos? id)))))
-
-(deftest mock-snapshot-invokes-callback
-  (testing "MockMarketDataSource.snapshot invokes callback with a snapshot map"
-    (let [src    (MockMarketDataSource.)
-          result (atom nil)]
-      (md/snapshot src {:symbol "SPY"} "" #(reset! result %))
-      (is (= :mock-snapshot (:type @result))))))
-
-(deftest mock-forwards-contract
-  (testing "Mock impls forward the contract to the callback"
-    (let [src      (MockMarketDataSource.)
-          contract {:symbol "GOOG" :conid 12345}
-          result   (atom nil)]
-      (md/get-quote src contract "233" #(reset! result %))
-      (is (= contract (:contract @result))))))
+(deftest mock-returns-canned-stream-and-calc
+  (testing "MockMarketDataSource stream-opt and calc-iv return their canned values"
+    (let [src (md/make-mock-source
+                {:stream-opt {"MPWR" {:iv 0.41 :delta -0.91}}
+                 :calc-iv    {"MPWR" {:iv 0.41 :delta -0.91 :gamma 0.0001}}})]
+      (is (= {:iv 0.41 :delta -0.91}
+             (md/stream-opt src {:symbol "MPWR" :expiry "20260918"
+                                 :strike 1500 :right :put} 100)))
+      (is (= {:iv 0.41 :delta -0.91 :gamma 0.0001}
+             (md/calc-iv src {:symbol "MPWR" :expiry "20260918"
+                              :strike 1500 :right :put
+                              :option-price 1.35 :underlying-price 1450.0}))))))

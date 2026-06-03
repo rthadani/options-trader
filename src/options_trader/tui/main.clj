@@ -18,6 +18,7 @@
             [options-trader.tui.pi-proc :as pi-proc]
             [options-trader.tui.proc :as proc]
             [options-trader.tui.runtime-context :as rt-ctx]
+            [options-trader.data.market-data :as md]
             [options-trader.data.quotes :as quotes]
             [options-trader.tui.ibkr :as tui-ibkr]
             [options-trader.tui.render :as render-ui]
@@ -501,7 +502,8 @@
         (try
           (let [t0   (System/currentTimeMillis)
                 conn (tui-ibkr/live-conn)
-                q    (quotes/detailed-quote conn @ds-atom sym :timeout-ms 6000)
+                src  (md/make-source {:type :ibkr :ib-client conn})
+                q    (quotes/detailed-quote src @ds-atom sym)
                 dt   (- (System/currentTimeMillis) t0)]
             (cond
               (= :unavailable q)
@@ -560,21 +562,31 @@
           (st/append-chat! :system
             (str "fetching " sym " " expiry " " strike-s " " right " ..."))
           (a/thread
-            (let [conn (tui-ibkr/live-conn)
-                  ;; Option snapshots, especially for deep-ITM strikes
-                  ;; after-hours, regularly take 8-15 s for TWS to package
-                  ;; greeks + return the terminal event.
-                  q    (quotes/option-quote conn
-                         {:symbol sym :expiry expiry :strike strike :right right}
-                         :timeout-ms 15000)]
+            (let [conn   (tui-ibkr/live-conn)
+                  src    (md/make-source {:type :ibkr :ib-client conn})
+                  opts   {:symbol sym :expiry expiry :strike strike :right right}
+                  ;; Snapshot-mode reliably returns prev-session close + bid/ask
+                  ;; for inactive strikes — TWS sends cached state and a
+                  ;; tick-snapshot-end terminator, no waiting on live ticks.
+                  q0     (quotes/option-quote-snapshot src opts)
+                  ;; Snapshot rarely carries model greeks after-hours (no live
+                  ;; computation). Hand TWS the close prices and let it back
+                  ;; out IV + greeks — works any time of day.
+                  need-calc? (and (map? q0)
+                                  (nil? (:iv q0))
+                                  (nil? (:delta q0)))
+                  q      (if need-calc?
+                           (let [_ (st/append-chat! :system
+                                     "no live greeks — falling back to reqCalcImpliedVolatility")
+                                 calc (quotes/calc-option-greeks src opts)]
+                             (if (map? calc) (merge q0 calc) q0))
+                           q0)]
               (cond
                 (= :unavailable q)
                 (st/append-chat! :system "option quote unavailable (TWS rejected)")
 
                 (= :timeout q)
-                (st/append-chat! :system
-                  (str "option quote timed out — TWS may not be subscribed for "
-                       sym " options"))
+                (st/append-chat! :system "option quote timed out — TWS sent no snapshot end")
 
                 :else
                 (do

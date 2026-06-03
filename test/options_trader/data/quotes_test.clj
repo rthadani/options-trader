@@ -1,7 +1,7 @@
 (ns options-trader.data.quotes-test
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
-            [options-trader.data.ibkr :as ibkr]
+            [options-trader.data.market-data :as md]
             [options-trader.data.quotes :as quotes]))
 
 ;;; ── Test fixture DB ───────────────────────────────────────────────────────
@@ -62,52 +62,67 @@
     (is (= {:pc-oi-ratio nil :pc-vol-ratio nil}
            (quotes/pc-ratios ds "NOPE")))))
 
-;;; ── detailed-quote (assembly with stubbed IB) ─────────────────────────────
+;;; ── detailed-quote (assembly with mock source) ────────────────────────────
 
-(defn- stub-snapshot-events
-  "Build an IB-shaped tick event vector that exercises bid/ask/last/volume/
-   VWAP-via-RT_VOLUME."
-  []
-  [{:type :tick-price :field 1 :price 175.10}                     ;; bid
-   {:type :tick-price :field 2 :price 175.15}                     ;; ask
-   {:type :tick-price :field 4 :price 175.12}                     ;; last
-   {:type :tick-price :field 6 :price 176.30}                     ;; high
-   {:type :tick-price :field 7 :price 174.20}                     ;; low
-   {:type :tick-size  :field 8 :size  25000000}                   ;; day volume
-   {:type :tick-string :field 48 :value "175.12;100;1700000000;25000000;174.85;true"}])
-
-(deftest detailed-quote-merges-ib-and-db
-  (let [ds (mem-conn)]
+(deftest detailed-quote-merges-source-and-db
+  (let [ds  (mem-conn)
+        src (md/make-mock-source
+              {:snapshot-stk
+               {"AAPL" {:bid 175.10 :ask 175.15 :last 175.12
+                        :high 176.30 :low 174.20
+                        :rt-volume 25000000.0
+                        :vwap 174.85}}})]
     (prep-bars! ds [["AAPL" "2026-05-20" 20000000]
                     ["AAPL" "2026-05-21" 22000000]
                     ["AAPL" "2026-05-22" 24000000]])
     (prep-indicators! ds [["AAPL" 0.85 0.72]])
-    (with-redefs [ibkr/req-market-data-snapshot
-                  (fn [_conn _contract _ticks cb]
-                    (cb (stub-snapshot-events))
-                    1)]
-      (let [q (quotes/detailed-quote :stub-conn ds "AAPL"
-                                     :timeout-ms 100 :avg-window 3)]
-        (testing "live IB fields"
-          (is (= 175.10 (:bid q)))
-          (is (= 175.15 (:ask q)))
-          (is (= 175.12 (:last q)))
-          (is (= 176.30 (:high q)))
-          (is (= 174.20 (:low q)))
-          (is (= 174.85 (:day-vwap q))   "VWAP parsed from RT_VOLUME"))
-        (testing "RT_VOLUME total-volume overrides tick-size :volume"
-          (is (= 25000000.0 (:day-volume q))))
-        (testing "DB-derived fields"
-          (is (= 22000000.0 (:avg-volume-3d q)))
-          (is (= 0.85 (:pc-oi-ratio q)))
-          (is (= 0.72 (:pc-vol-ratio q))))
-        (testing "computed volume ratio"
-          (is (= (double (/ 25000000.0 22000000.0)) (:volume-ratio q))))))))
+    (let [q (quotes/detailed-quote src ds "AAPL" :avg-window 3)]
+      (testing "live source fields"
+        (is (= 175.10 (:bid q)))
+        (is (= 175.15 (:ask q)))
+        (is (= 175.12 (:last q)))
+        (is (= 176.30 (:high q)))
+        (is (= 174.20 (:low q)))
+        (is (= 174.85 (:day-vwap q))   "VWAP carried through from snapshot"))
+      (testing "rt-volume populates :day-volume"
+        (is (= 25000000.0 (:day-volume q))))
+      (testing "DB-derived fields"
+        (is (= 22000000.0 (:avg-volume-3d q)))
+        (is (= 0.85 (:pc-oi-ratio q)))
+        (is (= 0.72 (:pc-vol-ratio q))))
+      (testing "computed volume ratio"
+        (is (= (double (/ 25000000.0 22000000.0)) (:volume-ratio q)))))))
 
-(deftest detailed-quote-unavailable-when-ib-rejects
-  (let [ds (mem-conn)]
+(deftest detailed-quote-unavailable-when-source-rejects
+  (let [ds  (mem-conn)
+        src (md/make-mock-source {})]
     (prep-bars! ds [])
     (prep-indicators! ds [])
-    (with-redefs [ibkr/req-market-data-snapshot
-                  (fn [_ _ _ _] :unavailable)]
-      (is (= :unavailable (quotes/detailed-quote :stub-conn ds "AAPL"))))))
+    (is (= :unavailable (quotes/detailed-quote src ds "AAPL")))))
+
+;;; ── option-quote / calc-option-greeks (delegate to source) ────────────────
+
+(deftest option-quote-delegates-to-stream-opt
+  (let [src (md/make-mock-source
+              {:stream-opt {"MPWR" {:bid 1.20 :ask 1.50 :iv 0.41 :delta -0.91}}})
+        q   (quotes/option-quote src
+              {:symbol "MPWR" :expiry "20260918" :strike 1500 :right :put}
+              :collect-ms 50)]
+    (is (= {:bid 1.20 :ask 1.50 :iv 0.41 :delta -0.91} q))))
+
+(deftest calc-option-greeks-uses-provided-prices
+  (let [src (md/make-mock-source
+              {:calc-iv {"MPWR" {:iv 0.41 :delta -0.91 :gamma 0.0001}}})
+        q   (quotes/calc-option-greeks src
+              {:symbol "MPWR" :expiry "20260918" :strike 1500 :right :put
+               :option-price 1.35 :underlying-price 1450.0})]
+    (is (= {:iv 0.41 :delta -0.91 :gamma 0.0001} q))))
+
+(deftest calc-option-greeks-snapshots-prices-when-missing
+  (let [src (md/make-mock-source
+              {:snapshot-opt {"MPWR" {:close 1.35}}
+               :snapshot-stk {"MPWR" {:close 1450.0}}
+               :calc-iv      {"MPWR" {:iv 0.41 :delta -0.91}}})
+        q   (quotes/calc-option-greeks src
+              {:symbol "MPWR" :expiry "20260918" :strike 1500 :right :put})]
+    (is (= {:iv 0.41 :delta -0.91} q))))

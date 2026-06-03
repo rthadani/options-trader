@@ -233,13 +233,16 @@
   "TWS sends informational status updates with the :error event type but
    non-fatal codes:
      2100–2200       — connection/data-feed warnings
-     10000–10199     — market-data farm status + delayed-data notices
-                        (10167 = 'displaying delayed market data')
+     10000–10999     — market-data farm status, delayed-data notices,
+                        entitlement-missing notices (10167 = delayed-data
+                        display; 10358 = fundamentals subscription absent).
+                        These are info, NOT request-killing — TWS keeps
+                        sending the rest of the data.
    Treat these as info, not failure — the request keeps streaming data."
   [code]
   (when (number? code)
     (or (<= 2100 code 2200)
-        (<= 10000 code 10199))))
+        (<= 10000 code 10999))))
 
 (defn- protobuf-event?
   "TWS emits a non-protobuf event + a protobuf duplicate for most callbacks.
@@ -543,12 +546,27 @@
         (:model-theta m) (assoc :theta (:model-theta m))
         (:model-vega m)  (assoc :vega  (:model-vega m))))))
 
+;; MUST be sequences (vectors of ints), NOT comma-separated strings —
+;; ib-re-actor's `:to-ib :tick-list` translation does `(map ... val)` which
+;; iterates a string character-by-character → TWS receives nonsense like
+;; `1,0,0,,,1,0,1,…` and rejects with error 321. Sequence form joins
+;; correctly to `100,101,…`.
+
 (def all-generic-ticks
-  "Comma-separated generic tick string covering ~every useful field a snapshot
-   can carry: option volume / OI / IV, historical vol, fundamental ratios,
-   RT volume, shortable, dividends, etc. Missing ticks (for the contract type)
-   are silently omitted by TWS — no cost to ask for the union."
-  "100,101,104,105,106,162,165,221,225,233,236,258,292,293,294,295,318,411,456,588,595")
+  "Generic-tick IDs for STK contracts. Asking for ticks that don't apply
+   to STK is harmless — TWS silently omits them. But ticks invalid for
+   the contract type get the WHOLE request rejected, so OPT/FUT use the
+   typed constants below."
+  [100 101 104 105 106 162 165 221 225 233 236 258 292 293 294 295 318 411 456 588 595])
+
+(def option-generic-ticks
+  "Generic-tick IDs valid for OPT contracts. TWS rejects the whole
+   request with error 321 if you include 104 (Historical Vol — stocks
+   only) or 162 (Index Future Premium — futures only). Tick 258
+   (Fundamental Ratios) is also dropped — most accounts don't have
+   the Fundamentals subscription, so it triggers warning 10358 which
+   kills the snapshot batch before any prices arrive."
+  [100 101 105 106 165 221 225 233 236 292 293 294 295 318 411 456 588 595])
 
 (def ^:private market-data-type-aliases
   "Map any of the common spellings (keyword or int) onto the keyword the
@@ -594,7 +612,17 @@
 
 (defn- send-market-data [ecs {:keys [req-id contract tick-types snapshot]}]
   ((cs-fn 'request-market-data) ecs req-id (->contract contract)
-   (or tick-types "") (boolean snapshot) false))
+   ;; ib-re-actor wants a SEQUENCE for tick-list (sees each item, str-joins
+   ;; with commas). Empty sequence = no generic ticks.
+   (or tick-types []) (boolean snapshot) false))
+
+(defn- send-calc-implied-vol
+  "Ask TWS to compute IV + greeks from a given option price and underlying
+   price. Works after-hours / when there's no live market data, because
+   we provide the prices."
+  [ecs {:keys [req-id contract option-price underlying-price]}]
+  ((cs-fn 'calculate-implied-volatility) ecs req-id (->contract contract)
+   (double option-price) (double underlying-price)))
 
 (defn- send-contract-details [ecs {:keys [req-id contract]}]
   ((cs-fn 'request-contract-details) ecs req-id (->contract contract)))
@@ -659,6 +687,7 @@
    :req-account-updates     send-account-updates
    :req-pnl                 send-pnl
    :req-pnl-single          send-pnl-single
+   :req-calc-implied-vol    send-calc-implied-vol
    :req-news-providers      (fn [ecs _] ((cs-fn 'request-news-providers) ecs))
    :req-news-article        send-news-article
    :req-historical-news     send-historical-news
@@ -750,6 +779,26 @@
 
 (defn req-contract-details [conn contract cb]
   (dispatch-batch! conn {:type :req-contract-details :contract contract} cb))
+
+(defn req-calc-implied-vol
+  "Ask TWS to compute IV + greeks from a given option price and underlying
+   price. Works any time of day (no live market data needed) — exactly
+   the after-hours greeks path.
+
+   Delivers :tick-option-computation events on the cb (field 13 = model).
+   Caller is responsible for cancelling via `cancel-calc-implied-vol`."
+  [conn contract option-price underlying-price cb]
+  (dispatch-stream! conn {:type             :req-calc-implied-vol
+                          :contract         contract
+                          :option-price     option-price
+                          :underlying-price underlying-price}
+                    cb))
+
+(defn cancel-calc-implied-vol [conn req-id]
+  (try ((cs-fn 'cancel-calculate-implied-volatility) (:ecs conn) req-id)
+       (catch Throwable _))
+  (swap! pending dissoc req-id)
+  nil)
 
 (defn req-fundamentals [conn contract report-type cb]
   (dispatch-batch! conn {:type :req-fundamentals :contract contract
