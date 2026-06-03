@@ -130,36 +130,46 @@
    (refresh-fundamentals-views! ds source {}))
   ([ds source {:keys [symbols]}]
    (ensure-schema! ds)
-   (let [syms    (or (seq symbols) (all-symbols ds))
-         total   (count syms)
-         ok      (atom 0)
-         skipped (atom 0)
-         failed  (atom 0)]
-     (log/infof "fundamentals: processing %d symbols" total)
-     (doseq [[i sym] (map-indexed vector syms)]
-       (try
-         (let [p   (promise)
-               _   (fund/fetch-fundamentals sym {} source
-                     (fn [evs] (deliver p evs)))
-               evs (deref p 30000 nil)
-               raw (first evs)]
-           (cond
-             (or (nil? raw) (= :error (:type raw)))
-             (do (log/infof "fundamentals [%d/%d] %s skipped (%s)"
-                            (inc i) total sym (:message raw))
-                 (swap! skipped inc))
+   (let [syms        (or (seq symbols) (all-symbols ds))
+         total       (count syms)
+         oom-cap     5
+         step!
+         (fn [{:keys [oom-streak] :as tally} [i sym]]
+           (when (>= oom-streak oom-cap)
+             (throw (ex-info (str "aborting fundamentals: " oom-streak
+                                  " consecutive OOMs — heap is wedged, bump -Xmx")
+                             (assoc tally :aborted-at i :total total))))
+           (try
+             (let [p   (promise)
+                   _   (fund/fetch-fundamentals sym {} source
+                         (fn [evs] (deliver p evs)))
+                   evs (deref p 30000 nil)
+                   raw (first evs)]
+               (cond
+                 (or (nil? raw) (= :error (:type raw)))
+                 (do (log/infof "fundamentals [%d/%d] %s skipped (%s)"
+                                (inc i) total sym (:message raw))
+                     (-> tally (update :skipped inc) (assoc :oom-streak 0)))
 
-             :else
-             (let [norm  (fund/normalise-fundamentals raw source)
-                   close (latest-close ds sym)
-                   rs    (ratios norm close)]
-               (persist-fundamentals! ds sym (str (:as-of norm)) norm)
-               (upsert-row! ds sym rs)
-               (log/infof "fundamentals [%d/%d] %s ok (as-of %s)"
-                          (inc i) total sym (:as-of norm))
-               (swap! ok inc))))
-         (catch Throwable t
-           (log/warnf "fundamentals [%d/%d] %s failed: %s"
-                      (inc i) total sym (.getMessage t))
-           (swap! failed inc))))
-     {:total total :ok @ok :skipped @skipped :failed @failed})))
+                 :else
+                 (let [norm  (fund/normalise-fundamentals raw source)
+                       close (latest-close ds sym)
+                       rs    (ratios norm close)]
+                   (persist-fundamentals! ds sym (str (:as-of norm)) norm)
+                   (upsert-row! ds sym rs)
+                   (log/infof "fundamentals [%d/%d] %s ok (as-of %s)"
+                              (inc i) total sym (:as-of norm))
+                   (-> tally (update :ok inc) (assoc :oom-streak 0)))))
+             (catch OutOfMemoryError t
+               (log/warnf "fundamentals [%d/%d] %s OOM — heap wedged" (inc i) total sym)
+               (System/gc)
+               (-> tally (update :failed inc) (update :oom-streak inc)))
+             (catch Throwable t
+               (log/warnf "fundamentals [%d/%d] %s failed: %s"
+                          (inc i) total sym (.getMessage t))
+               (-> tally (update :failed inc) (assoc :oom-streak 0)))))]
+     (log/infof "fundamentals: processing %d symbols" total)
+     (-> (reduce step! {:ok 0 :skipped 0 :failed 0 :oom-streak 0}
+                 (map-indexed vector syms))
+         (dissoc :oom-streak)
+         (assoc :total total)))))

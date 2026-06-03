@@ -25,27 +25,52 @@
 
 ;;; ── HTML parsing ────────────────────────────────────────────────────────────
 
+(defn- header-text
+  "Concatenated text of a <table>'s header row (first <tr>). Used as a
+   haystack for str/includes? — no separator needed."
+  [tbl]
+  (let [first-row (first (html/select tbl [:tr]))]
+    (apply str (map (comp str/trim html/text)
+                    (html/select first-row [:th])))))
+
+(defn- pick-table
+  "Find the .wikitable to scan. With :header-contains, returns the first
+   .wikitable whose header row contains the substring (case-sensitive);
+   otherwise returns the first .wikitable. Returns nil when no table
+   matches — caller turns that into an empty result."
+  [resource {:keys [header-contains]}]
+  (let [tables (html/select resource [:table.wikitable])]
+    (if (str/blank? header-contains)
+      (first tables)
+      (some (fn [t] (when (str/includes? (header-text t) header-contains) t))
+            tables))))
+
 (defn extract-tickers
   "Extract ticker symbols from an HTML source.
    src may be a String of HTML or a java.io.Reader.
    col-idx (0-based) selects which <td> column holds the symbol.
 
-   Only the FIRST .wikitable on the page is scanned. Wikipedia's index-list
-   pages (e.g. List_of_S%26P_500_companies) carry a second .wikitable with
-   'Selected changes' — its column 0 is a date, not a ticker; including it
-   produced rows like 'March 23, 2026' alongside real tickers."
-  ([src] (extract-tickers src 0))
-  ([src col-idx]
-   (let [reader     (if (instance? java.io.Reader src)
-                      src
-                      (java.io.StringReader. src))
-         resource   (html/html-resource reader)
-         first-tbl  (first (html/select resource [:table.wikitable]))
-         rows       (when first-tbl (html/select first-tbl [:tbody :tr]))
-         tickers    (for [row rows
-                          :let [cells (html/select row [:td])]
-                          :when (>= (count cells) (inc col-idx))]
-                      (-> cells (nth col-idx) html/text str/trim))]
+   Optional opts:
+     :header-contains \"Symbol\"  — pick the first .wikitable whose header
+                                    row contains this substring. Use this
+                                    when the page has multiple .wikitables
+                                    (e.g. infoboxes, index-changes) and
+                                    you need the components one.
+
+   Without :header-contains, falls back to the first .wikitable on the page."
+  ([src] (extract-tickers src 0 {}))
+  ([src col-idx] (extract-tickers src col-idx {}))
+  ([src col-idx opts]
+   (let [reader   (if (instance? java.io.Reader src)
+                    src
+                    (java.io.StringReader. src))
+         resource (html/html-resource reader)
+         tbl      (pick-table resource opts)
+         rows     (when tbl (html/select tbl [:tbody :tr]))
+         tickers  (for [row   rows
+                        :let  [cells (html/select row [:td])]
+                        :when (>= (count cells) (inc col-idx))]
+                    (-> cells (nth col-idx) html/text str/trim))]
      (vec (remove str/blank? tickers)))))
 
 (def parse-tickers
@@ -102,15 +127,17 @@
 (defn fetch-and-normalise
   "Fetch HTML from url, extract tickers at col-idx, and normalise.
    Returns a normalised vector or :unavailable on HTTP error.
-   Network is only touched here — extract-tickers + normalise-symbols are pure."
-  ([url] (fetch-and-normalise url 0))
-  ([url col-idx] (fetch-and-normalise url col-idx 15000))
-  ([url col-idx timeout-ms]
+   Network is only touched here — extract-tickers + normalise-symbols are pure.
+
+   opts forwards :header-contains and timeout-ms; see extract-tickers."
+  ([url] (fetch-and-normalise url 0 {}))
+  ([url col-idx] (fetch-and-normalise url col-idx {}))
+  ([url col-idx {:keys [timeout-ms header-contains] :or {timeout-ms 15000}}]
    (let [body (fetch-html url timeout-ms)]
      (if (= body :unavailable)
        :unavailable
        (-> body
-           (extract-tickers col-idx)
+           (extract-tickers col-idx {:header-contains header-contains})
            normalise-symbols)))))
 
 ;;; ── Source-config API ───────────────────────────────────────────────────────
@@ -124,7 +151,8 @@
       (do (println "Unknown source:" source-key) :unavailable)
       (fetch-and-normalise (:url cfg)
                            (or (:ticker-column cfg) 0)
-                           timeout-ms))))
+                           {:timeout-ms      timeout-ms
+                            :header-contains (:header-contains cfg)}))))
 
 (defn ticker-fetch
   "Alias for fetch-source — delegates by source key."

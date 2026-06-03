@@ -103,31 +103,61 @@
 
 ;;; ── Public API ──────────────────────────────────────────────────────────────
 
+(defn- compute-symbol-values
+  "Pure compute step: load bars + run every spec, return [sym values] or nil
+   when the symbol has no bars. Safe to run concurrently — only does DuckDB
+   reads (which are MVCC-safe) and CPU-bound ta4j work."
+  [ds specs sym]
+  (let [bars (load-bars ds sym)]
+    (when (pos? (count bars))
+      (let [series (ta4j/ds->ta4j-ohlcv bars)
+            values (into {}
+                         (keep (fn [spec]
+                                 (when-let [v (compute-spec-value series spec)]
+                                   [(:column spec) v])))
+                         specs)]
+        [sym values]))))
+
 (defn refresh-runner-indicators!
-  "For every distinct symbol in bars_daily: load OHLCV via next.jdbc, build a
-   ta4j BaseBarSeries via ds->ta4j-ohlcv, instantiate each indicator declared in
-   resources/indicators.edn via ta4j/indicator, take the last value, and upsert
-   into latest_indicators keyed on (symbol).
+  "For every distinct symbol in bars_daily: load OHLCV, build a ta4j
+   BaseBarSeries, instantiate each indicator declared in indicators.edn,
+   take the last value, and upsert into latest_indicators keyed on
+   (symbol).
+
+   Compute is parallelised via pmap (DuckDB reads + ta4j are thread-safe,
+   independent per symbol). Upserts run sequentially because DuckDB has
+   one writer.
+
+   Progress is logged every 10% of the symbol list, plus a wall-clock
+   timing line at the end.
 
    Per-indicator skips:
    - Unknown :kind → warning logged, column omitted from row.
    - Insufficient bars / NaN / Infinite → column omitted silently.
-
-   The row for a symbol is skipped entirely when no indicator value is computable
-   (e.g. zero bars loaded), so NULLs are never written."
+   Row skipped entirely when no value is computable, so NULLs aren't written."
   [ds]
   (ensure-schema! ds)
-  (let [cfg   (edn/read-string (slurp (io/resource "indicators.edn")))
-        specs (:indicators cfg)
-        syms  (all-symbols ds)]
-    (doseq [sym syms]
-      (let [bars (load-bars ds sym)
-            n    (count bars)]
-        (when (pos? n)
-          (let [series (ta4j/ds->ta4j-ohlcv bars)
-                values (into {}
-                             (keep (fn [spec]
-                                     (when-let [v (compute-spec-value series spec)]
-                                       [(:column spec) v]))
-                                   specs))]
-            (upsert-row! ds sym values)))))))
+  (let [cfg    (edn/read-string (slurp (io/resource "indicators.edn")))
+        specs  (:indicators cfg)
+        syms   (all-symbols ds)
+        total  (count syms)
+        step   (max 1 (long (/ total 10)))
+        t0     (System/currentTimeMillis)
+        done   (atom 0)
+        log-progress!
+        (fn [sym]
+          (let [n (swap! done inc)]
+            (when (or (zero? (mod n step)) (= n total))
+              (let [dt (/ (- (System/currentTimeMillis) t0) 1000.0)
+                    pct (long (* 100.0 (/ n (double total))))]
+                (log/infof "runner: %d/%d symbols (%d%%) in %.1fs — last %s"
+                           n total pct dt sym)))))]
+    (log/infof "runner: computing %d indicators across %d symbols (parallel)"
+               (count specs) total)
+    (doseq [result (pmap #(compute-symbol-values ds specs %) syms)]
+      (when result
+        (let [[sym values] result]
+          (upsert-row! ds sym values)
+          (log-progress! sym))))
+    (log/infof "runner: done — %d symbols in %.1fs"
+               total (/ (- (System/currentTimeMillis) t0) 1000.0))))

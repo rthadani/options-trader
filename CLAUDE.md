@@ -13,7 +13,7 @@ Lanterna terminal UI.
 | Broker       | ib-re-actor-976-plus 0.1.10.43.02 (PINNED)       |
 | TWS / Gateway| 10.43.02 (PINNED — do not bump)                  |
 | Indicators   | ta4j-core 0.16 (reflection-free Java interop)    |
-| DB           | DuckDB JDBC 1.1.3 + next.jdbc + HoneySQL         |
+| DB           | DuckDB JDBC 1.1.3 + next.jdbc (raw SQL, no DSL)  |
 | TUI          | Lanterna 3.1.2                                   |
 | Screener     | Raw SQL via next.jdbc; `.screen` files watched   |
 | Filings      | edgarjure (10-K/Q, 8-K, 13D/G)                   |

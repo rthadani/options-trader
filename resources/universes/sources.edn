@@ -1,8 +1,13 @@
-{:sp500    {:url             "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-            :table-selector  ".wikitable"
-            :ticker-column   0
-            :format          :html}
- :nasdaq100 {:url            "https://en.wikipedia.org/wiki/Nasdaq-100"
-             :table-selector ".wikitable"
-             :ticker-column  1
-             :format         :html}}
+{:sp500    {:url              "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+            :table-selector   ".wikitable"
+            ;; Pick the first .wikitable whose header row contains this string.
+            ;; Wikipedia adds infoboxes / changes tables above the components
+            ;; table; positional selection silently breaks when that happens.
+            :header-contains  "Symbol"
+            :ticker-column    0
+            :format           :html}
+ :nasdaq100 {:url              "https://en.wikipedia.org/wiki/Nasdaq-100"
+             :table-selector  ".wikitable"
+             :header-contains "Ticker"
+             :ticker-column   0
+             :format          :html}}

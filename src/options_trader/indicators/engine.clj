@@ -8,7 +8,6 @@
             [next.jdbc.result-set :as rs]
             [options-trader.data.fundamentals :as fundamentals]
             [options-trader.indicators.beta :as beta]
-            [options-trader.indicators.composites :as composites]
             [options-trader.indicators.earnings-views :as earnings-views]
             [options-trader.indicators.event-flags :as event-flags]
             [options-trader.indicators.fundamentals-views :as fundamentals-views]
@@ -18,7 +17,8 @@
             [options-trader.indicators.runner :as runner]
             [options-trader.indicators.sector-metrics :as sector-metrics]
             [options-trader.indicators.ta4j :as ta4j]
-            [options-trader.paths :as paths])
+            [options-trader.paths :as paths]
+            [taoensso.timbre :as log])
   (:import [java.time ZoneOffset]))
 
 (defn load-config
@@ -343,24 +343,39 @@
             (ensure-column! ds pct-col)
             (upsert-row! ds symbol {pct-col pct-val})))))))
 
+(defn- run-pass!
+  "Time and log one indicator pass. Surfaces which sub-step is slow so a
+   long-running refresh doesn't look frozen."
+  [label f ds]
+  (log/infof "indicators: %s starting..." label)
+  (let [t0 (System/currentTimeMillis)
+        r  (f ds)
+        dt (/ (- (System/currentTimeMillis) t0) 1000.0)]
+    (log/infof "indicators: %s done in %.1fs" label dt)
+    r))
+
 (defn refresh-derived-indicators!
   "Run all derived indicator passes.  runner/refresh-runner-indicators! fires first
    to populate persistent ta4j columns before any SQL-only slice can COALESCE
    against them.  SQL-based slices follow in dependency order.
 
+   Each pass is timed and logged so a long refresh doesn't look stuck.
+
    Note: fundamentals are NOT refreshed here — they hit SEC EDGAR and take ~1
    request per symbol, which is too slow for interactive cadence. Run
    `refresh-fundamentals!` separately on a daily schedule."
   [ds]
-  (runner/refresh-runner-indicators! ds)
-  (iv/refresh-iv-indicators! ds)
-  (oca/refresh-option-chain-agg! ds)
-  (sector-metrics/refresh-sector-metrics! ds)
-  (earnings-views/refresh-earnings-views! ds)
-  (price-action-views/refresh-price-action-views! ds)
-  (event-flags/refresh-event-flags! ds)
-  (beta/refresh-beta! ds)
-  (composites/refresh-composites! ds))
+  (let [t0 (System/currentTimeMillis)]
+    (run-pass! "runner"             runner/refresh-runner-indicators! ds)
+    (run-pass! "iv"                 iv/refresh-iv-indicators! ds)
+    (run-pass! "option-chain-agg"   oca/refresh-option-chain-agg! ds)
+    (run-pass! "sector-metrics"     sector-metrics/refresh-sector-metrics! ds)
+    (run-pass! "earnings-views"     earnings-views/refresh-earnings-views! ds)
+    (run-pass! "price-action-views" price-action-views/refresh-price-action-views! ds)
+    (run-pass! "event-flags"        event-flags/refresh-event-flags! ds)
+    (run-pass! "beta"               beta/refresh-beta! ds)
+    (log/infof "indicators: all passes done in %.1fs"
+               (/ (- (System/currentTimeMillis) t0) 1000.0))))
 
 (defn refresh-fundamentals!
   "Fetch fundamentals from SEC EDGAR and persist + upsert ratio columns.

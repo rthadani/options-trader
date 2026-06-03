@@ -93,6 +93,42 @@
       (str (subs s 0 4) "-" (subs s 4 6) "-" (subs s 6 8))
       s)))
 
+(def ^:private zero-tally
+  {:symbols-ok 0 :symbols-err 0 :symbols-empty 0
+   :timeouts   0 :unavailable 0 :rows 0})
+
+(defn- classify
+  "Pure function: classify one worker result into [tally-update outcome].
+   tally-update is a fn that takes the running tally and returns the new one;
+   outcome is :ok / :bad / :empty for the consec-bad streak counter."
+  [task i total sym r]
+  (cond
+    (instance? Throwable r)
+    [(fn [t] (update t :symbols-err inc))
+     :bad
+     (format "%s [%d/%d] %s failed: %s" task i total sym (.getMessage ^Throwable r))]
+
+    (= :unavailable r)
+    [(fn [t] (update t :unavailable inc))
+     :bad
+     (format "%s [%d/%d] %s unavailable (TWS rejected)" task i total sym)]
+
+    (:timeout? r)
+    [(fn [t] (update t :timeouts inc))
+     :bad
+     (format "%s [%d/%d] %s timeout — IB never returned" task i total sym)]
+
+    (map? r)
+    (let [rows (or (:rows r) 0)]
+      [(fn [t] (-> t (update :symbols-ok inc) (update :rows + rows)))
+       :ok
+       (format "%s [%d/%d] %s ok (%d rows)" task i total sym rows)])
+
+    :else
+    [(fn [t] (update t :symbols-empty inc))
+     :empty
+     (format "%s [%d/%d] %s no data" task i total sym)]))
+
 (defn- each-symbol!
   "Fan f over symbols with bounded concurrency (*parallelism* in-flight at a
    time), tally outcomes as they complete, and log per-symbol progress.
@@ -108,72 +144,41 @@
    a row come back bad — almost always means TWS is wedged and the remaining
    calls would all time out. Running futures are interrupted on abort."
   [task symbols f]
-  (let [start      (System/currentTimeMillis)
-        total      (count symbols)
-        n          (max 1 (min *parallelism* (max 1 total)))
-        pool       (Executors/newFixedThreadPool n)
-        ecs        (ExecutorCompletionService. pool)
-        acc        (atom {:symbols-ok 0 :symbols-err 0 :symbols-empty 0
-                          :timeouts 0 :unavailable 0 :rows 0})
-        consec-bad (atom 0)]
+  (let [start (System/currentTimeMillis)
+        total (count symbols)
+        n     (max 1 (min *parallelism* (max 1 total)))
+        pool  (Executors/newFixedThreadPool n)
+        ecs   (ExecutorCompletionService. pool)]
     (log/infof "%s: %d symbols, parallelism=%d" task total n)
     (doseq [sym symbols]
       (.submit ecs ^Callable
-        (fn []
-          (try [sym (f sym)]
-               (catch Throwable t [sym t])))))
-    (try
-      (loop [i 1]
-        (when (<= i total)
-          (let [[sym r]
-                (try (.get (.take ecs))
-                     (catch Throwable t [nil t]))
-
-                outcome
-                (cond
-                  (instance? Throwable r)
-                  (do (log/warnf "%s [%d/%d] %s failed: %s"
-                                 task i total sym (.getMessage ^Throwable r))
-                      (swap! acc update :symbols-err inc) :bad)
-
-                  (= :unavailable r)
-                  (do (log/warnf "%s [%d/%d] %s unavailable (TWS rejected)"
-                                 task i total sym)
-                      (swap! acc update :unavailable inc) :bad)
-
-                  (:timeout? r)
-                  (do (log/warnf "%s [%d/%d] %s timeout — IB never returned"
-                                 task i total sym)
-                      (swap! acc update :timeouts inc) :bad)
-
-                  (map? r)
-                  (let [rows (or (:rows r) 0)]
-                    (log/infof "%s [%d/%d] %s ok (%d rows)" task i total sym rows)
-                    (swap! acc (fn [m] (-> m
-                                           (update :symbols-ok inc)
-                                           (update :rows + rows))))
-                    :ok)
-
-                  :else
-                  (do (log/warnf "%s [%d/%d] %s no data" task i total sym)
-                      (swap! acc update :symbols-empty inc) :empty))]
-            (if (= :bad outcome)
-              (swap! consec-bad inc)
-              (reset! consec-bad 0))
-            (when (>= @consec-bad *fail-fast-consecutive*)
-              (.shutdownNow pool)
-              (throw (ex-info (format "%s aborted: %d consecutive failures — is TWS connected?"
-                                      (name task) @consec-bad)
-                              (assoc @acc :task task :aborted-at i :total total)))))
-          (recur (inc i))))
-      (finally
-        (.shutdown pool)
-        (try (.awaitTermination pool 5 TimeUnit/SECONDS)
-             (catch InterruptedException _))))
-    (assoc @acc
-           :task       task
-           :n-symbols  total
-           :elapsed-ms (- (System/currentTimeMillis) start))))
+        (fn [] (try [sym (f sym)] (catch Throwable t [sym t])))))
+    (let [final-tally
+          (try
+            (loop [i 1, tally zero-tally, consec-bad 0]
+              (if (> i total)
+                tally
+                (let [[sym r] (try (.get (.take ecs))
+                                   (catch Throwable t [nil t]))
+                      [update-tally outcome msg] (classify task i total sym r)
+                      tally'      (update-tally tally)
+                      consec-bad' (if (= :bad outcome) (inc consec-bad) 0)]
+                  (if (= :ok outcome) (log/info msg) (log/warn msg))
+                  (when (>= consec-bad' *fail-fast-consecutive*)
+                    (.shutdownNow pool)
+                    (throw (ex-info
+                             (format "%s aborted: %d consecutive failures — is TWS connected?"
+                                     (name task) consec-bad')
+                             (assoc tally' :task task :aborted-at i :total total))))
+                  (recur (inc i) tally' consec-bad'))))
+            (finally
+              (.shutdown pool)
+              (try (.awaitTermination pool 5 TimeUnit/SECONDS)
+                   (catch InterruptedException _))))]
+      (assoc final-tally
+             :task       task
+             :n-symbols  total
+             :elapsed-ms (- (System/currentTimeMillis) start)))))
 
 ;;; ── Bars (daily) — incremental ─────────────────────────────────────────────
 

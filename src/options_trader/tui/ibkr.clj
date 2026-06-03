@@ -180,37 +180,39 @@
              (catch Throwable t
                (log-message! (str "re-subscribe failed: " (.getMessage t)))))))))
 
+(def ^:private miss-threshold
+  "ibkr/is-connected? can return false momentarily during heavy event
+   traffic even when the socket is fine. Require N consecutive false
+   readings before flipping to :disconnected so the indicator doesn't
+   strobe between connected/disconnected."
+  3)
+
 (defn- start-health-watchdog! []
   (when @health-stop-atom
     (a/close! @health-stop-atom)
     (reset! health-stop-atom nil))
-  (let [stop (a/chan)
-        ;; ibkr/is-connected? can return false momentarily during heavy
-        ;; event traffic even when the socket is fine. Require N consecutive
-        ;; false readings before flipping to :disconnected so the indicator
-        ;; doesn't strobe between connected/disconnected.
-        miss-streak (atom 0)
-        miss-threshold 3]
+  (let [stop (a/chan)]
     (reset! health-stop-atom stop)
-    (a/go-loop []
+    (a/go-loop [misses 0]
       (let [timeout (a/timeout health-interval-ms)
             [_ ch]  (a/alts! [stop timeout])]
-        (when (= ch timeout)
-          (let [actual    (ibkr/is-connected?)
-                reported  (= :connected (:tws-status @st/state))]
-            (if actual
-              (do (reset! miss-streak 0)
-                  (when (not reported) (st/set-tws-status! :connected)))
-              (let [n (swap! miss-streak inc)]
-                (when (and reported (>= n miss-threshold))
-                  (st/set-tws-status! :disconnected)
-                  (log-message! (str "TWS socket dropped — "
-                                     n " consecutive health checks failed"))))))
-          ;; Even with the socket alive, the reqAccountUpdates subscription
-          ;; can get torn down silently if TWS sends a stray :error tagged
-          ;; with our rid. Re-subscribe when updates have stalled for too long.
-          (try (maybe-resubscribe-stream!) (catch Throwable _))
-          (recur))))))
+        (if (not= ch timeout)
+          nil  ; stop channel triggered → exit go-loop
+          (let [reported (= :connected (:tws-status @st/state))
+                misses'  (if (ibkr/is-connected?)
+                           (do (when (not reported) (st/set-tws-status! :connected))
+                               0)
+                           (let [n (inc misses)]
+                             (when (and reported (>= n miss-threshold))
+                               (st/set-tws-status! :disconnected)
+                               (log-message! (str "TWS socket dropped — "
+                                                  n " consecutive health checks failed")))
+                             n))]
+            ;; Even with the socket alive, the reqAccountUpdates subscription
+            ;; can get torn down silently if TWS sends a stray :error tagged
+            ;; with our rid. Re-subscribe when updates have stalled for too long.
+            (try (maybe-resubscribe-stream!) (catch Throwable _))
+            (recur misses')))))))
 
 (defn- stop-health-watchdog! []
   (when-let [stop @health-stop-atom]
