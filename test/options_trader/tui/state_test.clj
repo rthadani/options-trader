@@ -61,3 +61,25 @@
   (st/append-activity! :thinking "pondering")
   (is (= [{:role :tool :text "run_sql"} {:role :thinking :text "pondering"}]
          (:activity @st/state))))
+;;; ── /compact prefix queue ────────────────────────────────────────────────
+
+(deftest take-prefix-returns-nil-when-empty
+  (is (nil? (st/take-prefix-message!))))
+
+(deftest queue-then-take-returns-the-string
+  (st/queue-prefix-message! "prior session: investigated AAPL fundamentals")
+  (is (= "prior session: investigated AAPL fundamentals"
+         (st/take-prefix-message!))))
+
+(deftest take-clears-the-queue-after-reading
+  (st/queue-prefix-message! "one")
+  (st/take-prefix-message!)
+  (is (nil? (st/take-prefix-message!))
+      "second take returns nil because the first consumed the queue")
+  (is (nil? (:prefix-message @st/state))
+      "the underlying state value is also cleared"))
+
+(deftest queue-overwrites-prior-queue
+  (st/queue-prefix-message! "first")
+  (st/queue-prefix-message! "second")
+  (is (= "second" (st/take-prefix-message!))))

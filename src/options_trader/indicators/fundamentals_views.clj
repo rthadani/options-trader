@@ -15,9 +15,9 @@
 ;;; ── Schema ──────────────────────────────────────────────────────────────────
 
 (def ^:private columns
-  [:pe_ratio :earnings_yield :price_to_book :fcf_yield :debt_to_equity
-   :current_ratio :gross_margin :operating_margin :net_margin :roe
-   :revenue_growth_yoy :net_income_growth_yoy :eps_growth_yoy])
+  [:pe_ratio :earnings_yield :price_to_book :fcf_yield :ocf_yield
+   :debt_to_equity :current_ratio :gross_margin :operating_margin :net_margin
+   :roe :revenue_growth_yoy :net_income_growth_yoy :eps_growth_yoy])
 
 (defn ensure-schema! [ds]
   (q/ensure-double-columns! ds columns))
@@ -34,11 +34,17 @@
 
 (defn- ratios
   "Compute the screenable ratios from a canonical fundamentals map +
-   the latest close + shares-outstanding-derived market-cap."
+   the latest close + shares-outstanding-derived market-cap.
+
+   ocf_yield exists as a resilient sibling to fcf_yield: edgarjure's
+   :capex extraction is unreliable for banks/REITs/many foreign filers,
+   which nils out :free-cash-flow and therefore fcf_yield. ocf_yield
+   needs only operating-cash-flow + shares — much more frequently
+   present — so sages have a usable cash-yield proxy when fcf is gone."
   [{:keys [revenue gross-profit operating-income net-income eps-diluted
            total-liabilities current-liabilities current-assets
            long-term-debt stockholders-equity free-cash-flow
-           shares-diluted history] :as _f}
+           operating-cash-flow shares-diluted history] :as _f}
    close]
   (let [market-cap (when (and (number? close) (number? shares-diluted))
                      (* close shares-diluted))
@@ -47,7 +53,8 @@
     {:pe_ratio              (div close eps-diluted)
      :earnings_yield        (div eps-diluted close)
      :price_to_book         (div close book-value)
-     :fcf_yield             (div free-cash-flow market-cap)
+     :fcf_yield             (div free-cash-flow      market-cap)
+     :ocf_yield             (div operating-cash-flow market-cap)
      :debt_to_equity        (div long-term-debt stockholders-equity)
      :current_ratio         (div current-assets current-liabilities)
      :gross_margin          (div gross-profit revenue)

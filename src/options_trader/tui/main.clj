@@ -294,6 +294,8 @@
     (a/>!! refresh-chan :refresh)
     true))
 
+(declare maybe-autocompact!)  ;; defined below near handle-compact
+
 (defn spawn-agent! [user-msg]
   (let [agent         (:agent @st/state :claude)
         model         (:model @st/state)
@@ -301,7 +303,17 @@
         scope         (:scope @st/state)
         cwd           (System/getProperty "user.dir")
         additional    (:additional-dirs @st/state [])
-        system-prompt (rt-ctx/build {})]
+        system-prompt (rt-ctx/build {})
+        ;; Auto-compact if the scope is over the token threshold. Runs
+        ;; before take-prefix-message! so the freshly-queued summary is
+        ;; picked up on this same turn.
+        _             (maybe-autocompact! scope)
+        ;; /compact (manual or auto) stages a summary of the prior
+        ;; session here; consume it once so the next turn carries the
+        ;; summary as context.
+        prefix        (st/take-prefix-message!)
+        user-msg      (cond->> user-msg
+                        prefix (str prefix "\n\n"))]
     (st/set-streaming! true)
     (st/append-message! :user user-msg)
     (a/>!! refresh-chan :refresh)
@@ -644,6 +656,72 @@
     (conv/clear-pi-session! scope)
     (st/append-chat! :system "claude + pi sessions reset for current scope")))
 
+(def ^:private compact-prompt
+  (str "Produce a concise (≤200 words) summary of the conversation so far. "
+       "PRESERVE: symbols/topics analysed, open questions, user preferences, "
+       "any decisions reached. DROP: specific numeric values, full filing "
+       "excerpts, verdict-card formatting, repeated tool output. The summary "
+       "becomes background context for a fresh session, so write it as a "
+       "briefing TO yourself, not as prose."))
+
+(def ^:dynamic *auto-compact-threshold*
+  "Cumulative input-token threshold per scope for auto-compact. Set
+   below the model context cap to leave room for the current turn +
+   response. 100k = 50% of a 200k window — earlier compaction trades
+   some context fidelity for more headroom per turn. Dynamic so tests
+   / users can rebind without redeploying."
+  100000)
+
+(defn- scope-input-tokens [scope]
+  (or (-> (conv/current-claude-session scope) :tokens-input) 0))
+
+(defn- do-compact!
+  "Core compact: synchronously summarise via llm/complete, drop sessions,
+   queue the summary as next-msg prefix. Returns the summary string on
+   success, or nil if llm/complete failed."
+  [scope]
+  (try
+    (let [summary (llm/complete {} compact-prompt)]
+      (conv/clear-claude-session! scope)
+      (conv/clear-pi-session! scope)
+      (st/queue-prefix-message!
+        (str "Compacted-session briefing from prior turns:\n\n" summary))
+      summary)
+    (catch Throwable _ nil)))
+
+(defn handle-compact [_args _ds]
+  (let [scope (:scope @st/state)]
+    (a/thread
+      (st/append-chat! :system "compacting — asking agent to summarise current context...")
+      (a/>!! refresh-chan :refresh)
+      (if-let [summary (do-compact! scope)]
+        (st/append-chat! :system
+          (str "session reset; " (count summary) "-char summary queued "
+               "as prefix for your next message"))
+        (st/append-chat! :system "/compact failed — see logs"))
+      (a/>!! refresh-chan :refresh))))
+
+(defn- maybe-autocompact!
+  "If the current scope's cumulative input-tokens exceed the threshold,
+   run a compact synchronously before the next user message ships.
+   The queued summary is consumed by spawn-agent!'s take-prefix-message!
+   on the same turn, so the user's message goes out with the briefing
+   already prepended."
+  [scope]
+  (let [tokens *auto-compact-threshold*
+        used   (scope-input-tokens scope)]
+    (when (> used tokens)
+      (st/append-chat! :system
+        (format "auto-compact: scope tokens %d > threshold %d — summarising..."
+                used tokens))
+      (a/>!! refresh-chan :refresh)
+      (if-let [summary (do-compact! scope)]
+        (st/append-chat! :system
+          (format "auto-compact done; %d-char summary queued" (count summary)))
+        (st/append-chat! :system
+          "auto-compact failed; sending your message without compaction"))
+      (a/>!! refresh-chan :refresh))))
+
 (defn handle-sessions [_args _ds]
   (let [rows (conv/list-claude-sessions)]
     (if (empty? rows)
@@ -665,7 +743,9 @@
        "  /model [provider:id]            show or switch model"
        "  /agent [pi|claude]              show or switch agent"
        "  /clear-investigation            return to :scratch scope"
-       "  /reset                          drop claude session for current scope"
+       "  /reset                          drop claude+pi sessions for current scope"
+       "  /compact                        summarise + reset sessions, queue summary as next-msg prefix"
+       "                                  (auto-triggers when scope tokens exceed 100k)"
        "  /sessions                       list tracked claude sessions"
        ""
        "Hybrid (TUI side-effect + tells the agent):"
@@ -701,6 +781,7 @@
    "/agent"               handle-agent
    "/clear-investigation" handle-clear-investigation
    "/reset"               handle-reset
+   "/compact"             handle-compact
    "/sessions"            handle-sessions
    "/help"                handle-help})
 

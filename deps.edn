@@ -47,5 +47,5 @@
    :main-opts ["-m" "options-trader.mcp.server"]}
 
   :cli
-  {:jvm-opts  ["-Xmx8g"]
+  {:jvm-opts  ["-Xmx12g"]
    :main-opts ["-m" "options-trader.cli"]}}}
