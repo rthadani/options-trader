@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Cron-friendly wrapper around `clojure -M:cli refresh-<task>`.
 # Usage: bin/refresh <task> [extra args]
-#   task ∈ {daily, intraday, news, fundamentals, filings, universes, portfolio, ping}
+#   task ∈ {daily, intraday, news, fundamentals, filings,
+#           iv-daily, short-interest, earnings,
+#           universes, portfolio, ping, all}
 #
 # Examples:
-#   bin/refresh daily      --universe sp500
-#   bin/refresh intraday   --universe sp500 --bar-size "15 mins"
-#   bin/refresh news       --symbols AAPL,MSFT,SPY
+#   bin/refresh daily          --universe sp500
+#   bin/refresh intraday       --universe sp500 --bar-size "15 mins"
+#   bin/refresh news           --symbols AAPL,MSFT,SPY
+#   bin/refresh iv-daily       --universe sp500
+#   bin/refresh short-interest --universe sp500
+#   bin/refresh earnings       --universe sp500
+#   bin/refresh all            --universe sp500   # every phase
 #   bin/refresh ping
 #
 # Output: appended to cache/logs/cron-<task>.log (one file per task).

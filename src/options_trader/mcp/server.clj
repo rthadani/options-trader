@@ -1,10 +1,15 @@
 (ns options-trader.mcp.server
-  (:require [options-trader.config       :as config]
-            [options-trader.data.edgar   :as edgar]
-            [options-trader.data.ibkr    :as ibkr]
-            [options-trader.db.duckdb    :as duckdb]
-            [options-trader.mcp.protocol :as protocol]
-            [options-trader.mcp.tools    :as tools])
+  (:require [options-trader.config           :as config]
+            [options-trader.data.earnings    :as earnings]
+            [options-trader.data.edgar       :as edgar]
+            [options-trader.data.fundamentals :as fundamentals]
+            [options-trader.data.ibkr        :as ibkr]
+            [options-trader.data.news        :as news]
+            [options-trader.data.short-interest :as short-interest]
+            [options-trader.data.sources     :as sources]
+            [options-trader.db.duckdb        :as duckdb]
+            [options-trader.mcp.protocol     :as protocol]
+            [options-trader.mcp.tools        :as tools])
   (:gen-class))
 
 (def ^:private mcp-client-id
@@ -90,13 +95,28 @@
                              (binding [*out* *err*]
                                (println "warning: failed to open DB —" (.getMessage t)))
                              nil)))
-          ;; The MCP server holds its OWN TWS connection (client-id 9 by
-          ;; default) so IB-backed tools (fetch_quote, fetch_option_quote,
-          ;; fetch_option_chain) work when the agent calls them. Without this
-          ;; they return :unavailable. The TUI keeps its own connection
-          ;; (client-id 7); the two coexist fine.
-          ib-client (when cfg (open-ib! cfg))
-          ctx       (cond-> {}
-                      ds        (assoc :ds ds)
-                      ib-client (assoc :ib-client ib-client))]
-      (run-stdio-server rdr wtr ctx))))
+          ;; Own TWS connection (default client-id 9) so IB-backed tools
+          ;; work. The TUI uses client-id 7; the two coexist.
+          ib-client (when cfg (open-ib! cfg))]
+      (when ds
+        (let [edgar-cfg      (some-> cfg (get-in [:data-sources :edgar]))
+              edgar-live     (when edgar-cfg (edgar/make-source edgar-cfg))
+              ibkr-news-live (when ib-client
+                               (news/make-source {:type :ibkr :ib-client ib-client}))]
+          (sources/install-all!
+            {:fundamentals   (fundamentals/make-source
+                               {:type :duckdb-cache :ds ds
+                                :fallback (when edgar-cfg
+                                            (fundamentals/make-source edgar-cfg))})
+             :edgar          (edgar/make-source
+                               {:type :duckdb-cache :ds ds :fallback edgar-live})
+             :news           (news/make-source
+                               {:type :duckdb-cache :ds ds :fallback ibkr-news-live})
+             :earnings       (earnings/make-source
+                               {:type :duckdb-cache :ds ds})
+             :short-interest (short-interest/make-source
+                               {:type :duckdb-cache :ds ds})})))
+      (let [ctx (cond-> {}
+                  ds        (assoc :ds ds)
+                  ib-client (assoc :ib-client ib-client))]
+        (run-stdio-server rdr wtr ctx)))))

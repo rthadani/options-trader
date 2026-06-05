@@ -8,7 +8,10 @@
    in the environment. Without a configured User-Agent the namespace falls
    back to UnavailableEdgarSource and every call returns :unavailable —
    no network traffic is issued at namespace load."
-  (:require [edgar.api :as e]
+  (:require [cheshire.core :as json]
+            [clojure.string :as str]
+            [edgar.api :as e]
+            [options-trader.db.queries.research-cache :as qcache]
             [taoensso.timbre :as log]))
 
 ;;; ── Protocol ────────────────────────────────────────────────────────────────
@@ -132,9 +135,53 @@
 
 ;;; ── Dispatch ────────────────────────────────────────────────────────────────
 
+;; fetch-filings serves from the cache table; body / item / facts have
+;; no cache (the `filings.data` JSON column carries index metadata only)
+;; so they delegate to the live source.
+
+(deftype DuckDbEdgarSource [ds fallback]
+  IEdgarSource
+  (fetch-filings [_ symbol params]
+    (let [filter-params {:form-type  (some-> (:form-type params) str/upper-case)
+                         :start-date (:start-date params)
+                         :end-date   (:end-date params)}
+          limit         (or (:limit params) 50)
+          rows          (try (qcache/latest-filings ds symbol
+                               (assoc filter-params :limit limit))
+                             (catch Throwable t
+                               (log/warnf t "duckdb filings lookup failed for %s" symbol)
+                               nil))]
+      (cond
+        (seq rows)
+        (mapv (fn [r]
+                {:symbol           (:symbol r)
+                 :cik              (:cik r)
+                 :accession        (:accession r)
+                 :form-type        (:form_type r)
+                 :filed-at         (:filed_at r)
+                 :period-of-report (:period r)
+                 :source           :duckdb-cache
+                 :data             (when-let [d (:data r)]
+                                     (try (json/parse-string d true)
+                                          (catch Throwable _ nil)))})
+              rows)
+
+        fallback (fetch-filings fallback symbol params)
+        :else    :unavailable)))
+
+  (fetch-facts       [_ cik taxonomy]
+    (if fallback (fetch-facts fallback cik taxonomy) :unavailable))
+  (fetch-filing-body [_ accession fmt]
+    (if fallback (fetch-filing-body fallback accession fmt) :unavailable))
+  (fetch-filing-item [_ accession item-id]
+    (if fallback (fetch-filing-item fallback accession item-id) :unavailable))
+  (normalise-filing  [_ raw] raw)
+  (supported-forms   [_] :all))
+
 (defmulti make-source
   "Construct an IEdgarSource from a config map. Dispatches on :type.
-   Recognised types: :edgar, :unavailable. Unknown / missing → :unavailable stub."
+   Recognised types: :edgar, :duckdb-cache, :unavailable. Unknown →
+   :unavailable stub."
   :type)
 
 (defmethod make-source :default [_cfg]
@@ -149,6 +196,9 @@
         (EdgarjureSource. user-agent))
     (do (log/warn "edgar: :edgar source missing :user-agent — falling back to unavailable")
         unavailable-source)))
+
+(defmethod make-source :duckdb-cache [{:keys [ds fallback]}]
+  (->DuckDbEdgarSource ds fallback))
 
 ;;; ── Default-source resolution ──────────────────────────────────────────────
 

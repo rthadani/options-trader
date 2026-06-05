@@ -5,10 +5,12 @@
             [taoensso.timbre                 :as log]
             [cheshire.core                   :as json]
             [options-trader.data.ibkr        :as ibkr]
+            [options-trader.data.ibkr.pacer  :as pacer]
             [options-trader.data.universes   :as universes]
             [options-trader.data.news        :as news]
             [options-trader.data.edgar       :as edgar]
             [options-trader.data.fundamentals :as fundamentals]
+            [options-trader.data.yfinance    :as yf]
             [options-trader.db.queries.refresh :as q]
             [options-trader.indicators.engine :as indicators]
             [options-trader.portfolio.core   :as portfolio])
@@ -57,14 +59,23 @@
 
 ;;; ── Async helpers ──────────────────────────────────────────────────────────
 
-(defn- await-batch [start-fn timeout-ms]
-  (let [p (promise)
-        r (start-fn (fn [evs] (deliver p evs)))]
-    (cond
-      (= :unavailable r) :unavailable
-      :else
-      (let [v (deref p timeout-ms ::timeout)]
-        (if (= ::timeout v) ::timeout v)))))
+(defn- await-batch
+  "Submit an async batch request and wait. Returns the events vector,
+   :unavailable, or ::timeout. Optional cancel-fn is called with the
+   req-id on timeout so the caller can free server-side resources."
+  ([start-fn timeout-ms] (await-batch start-fn timeout-ms nil))
+  ([start-fn timeout-ms cancel-fn]
+   (let [p (promise)
+         r (start-fn (fn [evs] (deliver p evs)))]
+     (cond
+       (= :unavailable r) :unavailable
+       :else
+       (let [v (deref p timeout-ms ::timeout)]
+         (if (= ::timeout v)
+           (do (when (and cancel-fn (number? r))
+                 (try (cancel-fn r) (catch Throwable _)))
+               ::timeout)
+           v))))))
 
 (def ^:dynamic *fail-fast-consecutive*
   "Abort a refresh run if this many symbols in a row time out or come back
@@ -439,6 +450,151 @@
                 {:portfolio {:source :ibkr :account-id account-id}}
                 conn ds)]
       (portfolio/refresh! src ds account-id))))
+
+;;; ── IV / HV daily history ──────────────────────────────────────────────────
+
+(defn- iv-duration-for-gap [last-d]
+  (if (nil? last-d)
+    "2 Y"
+    (let [^LocalDate ld (if (instance? LocalDate last-d) last-d (.toLocalDate last-d))
+          days (.until ld (LocalDate/now) ChronoUnit/DAYS)]
+      (cond
+        (<= days 1)  "2 D"
+        (<= days 7)  "1 W"
+        (<= days 30) "1 M"
+        (<= days 90) "3 M"
+        :else        "1 Y"))))
+
+(defn- ib-iv-bars
+  [conn sym duration timeout-ms]
+  ;; Block until IB has a slot in the 60-per-10-min window. Log when
+  ;; we're about to wait so the run doesn't look hung.
+  (when-not (pacer/can-request-historical? pacer/default-pacer sym "1 day")
+    (log/infof "iv-daily: %s waiting for IB slot (%d/%d used in 10-min window)"
+               sym (pacer/hist-global-count) 60))
+  (pacer/await-hist-slot! pacer/default-pacer sym "1 day")
+  (await-batch
+    (fn [cb]
+      (ibkr/req-historical-bars
+        conn (ibkr/->contract sym) "1 day" duration
+        :option-implied-volatility cb))
+    timeout-ms
+    (fn [rid] (ibkr/cancel-sub! conn rid))))
+
+(defn- bars-close-series [ds sym]
+  (->> (jdbc/execute! ds
+         ["SELECT bar_date, close FROM bars_daily
+            WHERE symbol = ? AND close > 0 ORDER BY bar_date" sym]
+         as-lower)
+       vec))
+
+(defn- annualised-stddev
+  "Sample stddev of log returns × √252. nil when fewer than 2 returns."
+  [closes]
+  (when (>= (count closes) 2)
+    (let [rets (mapv (fn [[a b]] (Math/log (/ (double b) (double a))))
+                     (partition 2 1 closes))
+          n    (count rets)
+          mean (/ (reduce + rets) n)
+          var  (/ (reduce + (map (fn [r] (let [d (- r mean)] (* d d))) rets))
+                  (max 1 (dec n)))]
+      (* (Math/sqrt var) (Math/sqrt 252)))))
+
+(defn- hv30-by-date [rows]
+  (let [closes (mapv :close rows)
+        dates  (mapv (comp ->iso-date :bar_date) rows)
+        n      (count closes)]
+    (->> (range 31 (inc n))
+         (keep (fn [i]
+                 (when-let [v (annualised-stddev (subvec closes (- i 31) i))]
+                   [(nth dates (dec i)) v])))
+         (into {}))))
+
+(defn- index-by-date [bars]
+  (into {}
+        (keep (fn [b]
+                (let [d (or (:bar-date b) (:date b) (:time b))]
+                  (when (and d (:close b))
+                    [(->iso-date d) (:close b)]))))
+        bars))
+
+(defn- iv-is-fresh?
+  "True when iv_daily's latest row is at least as recent as bars_daily's
+   latest row for sym — no new data to add."
+  [ds sym]
+  (let [bar-d (latest-bar-date ds sym)
+        iv-d  (q/latest-iv-date ds sym)]
+    (boolean (and bar-d iv-d
+                  (or (= bar-d iv-d)
+                      (and (instance? LocalDate bar-d)
+                           (instance? LocalDate iv-d)
+                           (not (.isAfter ^LocalDate bar-d ^LocalDate iv-d))))))))
+
+(defn refresh-iv-daily!
+  "Pull daily IV30 from IB and compute HV30 locally from bars_daily,
+   merge by date, upsert into iv_daily. Skips symbols where iv_daily is
+   already as fresh as bars_daily."
+  [{:keys [conn ds symbols timeout-ms] :or {timeout-ms 15000}}]
+  (with-log ds :iv-daily nil
+    ;; *fail-fast-consecutive* relaxed because per-symbol IV gaps cluster
+    ;; legitimately (no-options-data symbols don't indicate broken TWS).
+    (binding [*parallelism* (min *parallelism* 4)
+              *fail-fast-consecutive* 25]
+      (each-symbol! :iv-daily symbols
+        (fn [sym]
+          (if (iv-is-fresh? ds sym)
+            {:rows 0}
+            (let [last-d (q/latest-iv-date ds sym)
+                  dur    (iv-duration-for-gap last-d)
+                  iv     (ib-iv-bars conn sym dur timeout-ms)]
+              (cond
+                (= :unavailable iv) :unavailable
+                (= ::timeout    iv) {:timeout? true}
+                :else
+                (let [iv-by-date (index-by-date iv)
+                      hv-by-date (hv30-by-date (bars-close-series ds sym))
+                      dates      (into (sorted-set) (concat (keys iv-by-date)
+                                                            (keys hv-by-date)))]
+                  (doseq [d dates]
+                    (q/upsert-iv-row! ds {:symbol sym :iv-date d
+                                           :iv30 (get iv-by-date d)
+                                           :hv30 (get hv-by-date d)}))
+                  {:rows (count dates)})))))))))
+
+;;; ── Short interest (Yahoo) ─────────────────────────────────────────────────
+
+(defn refresh-short-interest!
+  "Per symbol: pull the latest short-interest snapshot from Yahoo's
+   defaultKeyStatistics module and upsert into short_interest. Yahoo
+   reports settlement_date so each refresh is naturally deduped on the
+   (symbol, settlement_date) PK."
+  [{:keys [ds symbols]}]
+  (with-log ds :short-interest nil
+    (each-symbol! :short-interest symbols
+      (fn [sym]
+        (if-let [row (yf/fetch-short-interest sym)]
+          (if (:settlement-date row)
+            (do (q/upsert-short-interest! ds row) {:rows 1})
+            nil)
+          nil)))))
+
+;;; ── Earnings (Yahoo) ───────────────────────────────────────────────────────
+
+(defn refresh-earnings!
+  "Per symbol: pull historical EPS surprises (last ~4 quarters) into
+   earnings_events, and the next upcoming earnings date into
+   earnings_calendar. Both come from Yahoo via clj-yfinance."
+  [{:keys [ds symbols]}]
+  (with-log ds :earnings nil
+    (each-symbol! :earnings symbols
+      (fn [sym]
+        (let [hist (yf/fetch-earnings-history sym)
+              cal  (yf/fetch-earnings-calendar sym)]
+          (doseq [row (or hist [])]
+            (q/upsert-earnings-event! ds row))
+          (when cal
+            (q/upsert-earnings-calendar! ds cal))
+          {:rows (+ (count (or hist [])) (if cal 1 0))})))))
 
 ;;; ── Ping (smoke test) ──────────────────────────────────────────────────────
 

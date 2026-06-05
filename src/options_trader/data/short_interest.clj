@@ -6,7 +6,9 @@
    Loads without any network or file-system side-effects at namespace init time.
    No ib-re-actor or HTTP calls are made until an implementation is registered
    and explicitly invoked."
-  )
+  (:require [options-trader.data.sources :as sources]
+            [options-trader.db.queries.research-cache :as q]
+            [taoensso.timbre :as log]))
 
 ;;; ── Protocol ────────────────────────────────────────────────────────────────
 
@@ -20,26 +22,45 @@
      :float-shares, :days-to-cover, :short-pct-float, or :unavailable.")
   (fetch-borrow-rate [this symbol]
     "Fetch the current borrow/rebate rate for symbol.
-     Returns a map with :symbol, :rate, :fee-rate, :availability, or :unavailable.")
-  (normalise [this raw-record]
-    "Normalise a raw short-interest record to canonical map form.")
-  (supported-symbols [this]
-    "Return the set of symbols this source covers, or :all."))
+     Returns a map with :symbol, :rate, :fee-rate, :availability, or :unavailable."))
 
 ;;; ── Stub / unavailable implementation ──────────────────────────────────────
 
 (deftype UnavailableShortInterestSource []
   IShortInterestSource
   (fetch-short-interest [_ _symbol _params] :unavailable)
-  (fetch-borrow-rate    [_ _symbol]         :unavailable)
-  (normalise            [_ raw-record]      raw-record)
-  (supported-symbols    [_]                 :all))
+  (fetch-borrow-rate    [_ _symbol]         :unavailable))
 
-(def ^:private default-source
-  "Fallback source returned when no implementation is configured."
-  (UnavailableShortInterestSource.))
+(def ^:private unavailable-source (UnavailableShortInterestSource.))
 
-;;; ── Dispatch ────────────────────────────────────────────────────────────────
+(defn default-source []
+  (or (sources/default-source :short-interest) unavailable-source))
+
+(deftype DuckDbShortInterestSource [ds fallback]
+  IShortInterestSource
+  (fetch-short-interest [_ symbol params]
+    (let [limit (or (:limit params) 12)
+          rows  (try (q/latest-short-interest ds symbol limit)
+                     (catch Throwable t
+                       (log/warnf t "duckdb short_interest lookup failed for %s" symbol)
+                       nil))]
+      (cond
+        (seq rows)
+        (mapv (fn [r]
+                {:symbol          (:symbol r)
+                 :settlement-date (:settlement_date r)
+                 :short-interest  (:short_interest r)
+                 :float-shares    (:float_shares r)
+                 :days-to-cover   (:days_to_cover r)
+                 :short-pct-float (:short_pct_float r)
+                 :source          :duckdb-cache})
+              rows)
+
+        fallback (fetch-short-interest fallback symbol params)
+        :else    :unavailable)))
+
+  (fetch-borrow-rate [_ symbol]
+    (if fallback (fetch-borrow-rate fallback symbol) :unavailable)))
 
 (defmulti make-source
   "Construct an IShortInterestSource from a config map.
@@ -48,7 +69,10 @@
   :type)
 
 (defmethod make-source :default [_cfg]
-  default-source)
+  (default-source))
+
+(defmethod make-source :duckdb-cache [{:keys [ds fallback]}]
+  (->DuckDbShortInterestSource ds fallback))
 
 ;;; ── Public API (delegates to configured source) ─────────────────────────────
 
@@ -59,7 +83,7 @@
   ([symbol]
    (fetch-si symbol {}))
   ([symbol params]
-   (fetch-si symbol params default-source))
+   (fetch-si symbol params (default-source)))
   ([symbol params source]
    (fetch-short-interest source symbol params)))
 
@@ -68,6 +92,6 @@
    Config key: :data-sources/:short-interest
    Returns a borrow-rate map or :unavailable."
   ([symbol]
-   (fetch-borrow symbol default-source))
+   (fetch-borrow symbol (default-source)))
   ([symbol source]
    (fetch-borrow-rate source symbol)))

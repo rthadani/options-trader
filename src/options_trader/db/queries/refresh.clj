@@ -107,3 +107,26 @@
 (defn remove-member! [ds {:keys [universe symbol]}]
   (jdbc/execute-one! ds (delete-universe-member-sqlvec
                           {:universe universe :symbol symbol})))
+
+;;; ── iv_daily ─────────────────────────────────────────────────────────
+
+(defn latest-iv-date [ds symbol]
+  (:d (jdbc/execute-one! ds (latest-iv-date-sqlvec {:symbol symbol}) as-lower)))
+
+(defn upsert-iv-row! [ds {:keys [symbol iv-date iv30 hv30]}]
+  (jdbc/execute-one! ds
+    (upsert-iv-row-sqlvec {:symbol symbol :iv-date iv-date
+                            :iv30 iv30 :hv30 hv30})))
+
+;;; ── short_interest ───────────────────────────────────────────────────
+
+(defn upsert-short-interest! [ds row]
+  (jdbc/execute-one! ds (upsert-short-interest-sqlvec row)))
+
+;;; ── earnings ─────────────────────────────────────────────────────────
+
+(defn upsert-earnings-event! [ds row]
+  (jdbc/execute-one! ds (upsert-earnings-event-sqlvec row)))
+
+(defn upsert-earnings-calendar! [ds row]
+  (jdbc/execute-one! ds (upsert-earnings-calendar-sqlvec row)))

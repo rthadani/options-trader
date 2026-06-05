@@ -19,12 +19,13 @@
    :burst (max token capacity, default 50)."
   ([] (create-pacer {}))
   ([{:keys [rate burst] :or {rate default-rate burst default-capacity}}]
-   {:bucket     (atom {:tokens   (double burst)
-                       :capacity (double burst)
-                       :rate     (double rate)
-                       :last-ms  (System/currentTimeMillis)})
-    :queue      (atom [])
-    :hist-state (atom {})}))
+   {:bucket      (atom {:tokens   (double burst)
+                        :capacity (double burst)
+                        :rate     (double rate)
+                        :last-ms  (System/currentTimeMillis)})
+    :queue       (atom [])
+    :hist-state  (atom {})       ; per-(symbol, bar-size) — 6-per-2s rule
+    :hist-global (atom [])}))    ; connection-wide — 60-per-10min rule
 
 (defonce default-pacer (create-pacer))
 
@@ -98,28 +99,49 @@
   (filterv #(> % (- now hist-window-ms)) timestamps))
 
 (defn record-hist-request!
-  "Record a historical-data request for [symbol bar-size] in pacer's window."
+  "Record a historical-data request — bumps the per-(symbol, bar-size)
+   window (6-per-2s rule) and the connection-wide window (60-per-10min)."
   ([pacer symbol bar-size]
    (let [k   [symbol bar-size]
          now (System/currentTimeMillis)]
-     (swap! (:hist-state pacer) update k
-       (fn [ts] (conj (prune-window (or ts []) now) now)))))
+     (swap! (:hist-state  pacer) update k
+            (fn [ts] (conj (prune-window (or ts []) now) now)))
+     (swap! (:hist-global pacer)
+            (fn [ts] (conj (prune-window (or ts []) now) now)))))
   ([symbol bar-size] (record-hist-request! default-pacer symbol bar-size)))
 
 (defn hist-request-count
-  "Count historical-data requests in the 10-min window for [symbol bar-size]."
   ([pacer symbol bar-size]
-   (let [k   [symbol bar-size]
-         now (System/currentTimeMillis)
-         ts  (get @(:hist-state pacer) k [])]
-     (count (prune-window ts now))))
+   (count (prune-window (get @(:hist-state pacer) [symbol bar-size] [])
+                        (System/currentTimeMillis))))
   ([symbol bar-size] (hist-request-count default-pacer symbol bar-size)))
 
+(defn hist-global-count
+  ([pacer]
+   (count (prune-window (or @(:hist-global pacer) []) (System/currentTimeMillis))))
+  ([] (hist-global-count default-pacer)))
+
 (defn can-request-historical?
-  "True when fewer than hist-window-max requests have been made in the 10-min window."
   ([pacer symbol bar-size]
-   (< (hist-request-count pacer symbol bar-size) hist-window-max))
+   (and (< (hist-request-count pacer symbol bar-size) hist-window-max)
+        (< (hist-global-count  pacer)                  hist-window-max)))
   ([symbol bar-size] (can-request-historical? default-pacer symbol bar-size)))
+
+(defn await-hist-slot!
+  "Block until a historical-data slot frees up. Polls every poll-ms;
+   returns false after max-wait-ms (defaults to the 10-min window length
+   plus 30s slack — enough for the oldest entry to age out)."
+  ([pacer symbol bar-size]
+   (await-hist-slot! pacer symbol bar-size
+                     {:poll-ms 500 :max-wait-ms (+ hist-window-ms 30000)}))
+  ([pacer symbol bar-size {:keys [poll-ms max-wait-ms]
+                            :or {poll-ms 500 max-wait-ms (+ hist-window-ms 30000)}}]
+   (let [deadline (+ (System/currentTimeMillis) (long max-wait-ms))]
+     (loop []
+       (cond
+         (can-request-historical? pacer symbol bar-size) true
+         (> (System/currentTimeMillis) deadline)         false
+         :else (do (Thread/sleep (long poll-ms)) (recur)))))))
 
 ;;; ── Test helpers ─────────────────────────────────────────────────────────────
 

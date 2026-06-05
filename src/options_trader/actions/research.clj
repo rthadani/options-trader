@@ -80,6 +80,28 @@
        (:sentiment inc)
        (assoc :sentiment (news/fetch-news-sentiment symbol (or params {}) src)))}))
 
+(defmethod actions/handle-action :research/fetch-news-article
+  [{:keys [ib-client provider-code article-id]}]
+  (cond
+    (str/blank? (str provider-code))
+    {:ok false :error :missing-provider-code
+     :message "provider_code is required (it's in each fetch_news headline)"}
+
+    (str/blank? (str article-id))
+    {:ok false :error :missing-article-id
+     :message "article_id is required (it's in each fetch_news headline)"}
+
+    (nil? ib-client)
+    {:ok false :error :no-ib-client
+     :message "fetch_news_article requires an IB connection; the MCP server must hold one"}
+
+    :else
+    (let [r (news/fetch-article ib-client provider-code article-id)]
+      (if (= :unavailable r)
+        {:ok false :error :unavailable
+         :message "TWS returned no article body — article-id may be stale or provider-code wrong"}
+        {:ok true :result r}))))
+
 (defmethod actions/handle-action :research/fetch-filings
   [{:keys [symbol params] :as action}]
   {:ok     true

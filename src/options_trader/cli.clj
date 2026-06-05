@@ -46,6 +46,9 @@
   (println "  refresh-news         News headlines + sentiment")
   (println "  refresh-fundamentals EDGAR-backed fundamentals + ratios")
   (println "  refresh-filings      EDGAR filing list per symbol")
+  (println "  refresh-iv-daily     IB daily IV30 + HV30 series → iv_daily")
+  (println "  refresh-short-interest  Yahoo short-interest snapshot → short_interest")
+  (println "  refresh-earnings     Yahoo earnings history + calendar")
   (println "  refresh-universes    Re-fetch universe membership; log drift")
   (println "  refresh-portfolio    Positions + account summary")
   (println "  ping                 IB + DB connectivity smoke test")
@@ -132,6 +135,24 @@
         symbols (resolve-symbols opts ds)]
     (refresh/refresh-filings! {:ds ds :symbols symbols})))
 
+(defmethod run-subcommand :refresh-iv-daily [_ opts _]
+  (let [ds      (ds-of opts)
+        conn    (conn-of opts)
+        symbols (resolve-symbols opts ds)]
+    (try
+      (refresh/refresh-iv-daily! {:conn conn :ds ds :symbols symbols})
+      (finally (when-not (:conn opts) (ibkr/disconnect!))))))
+
+(defmethod run-subcommand :refresh-short-interest [_ opts _]
+  (let [ds      (ds-of opts)
+        symbols (resolve-symbols opts ds)]
+    (refresh/refresh-short-interest! {:ds ds :symbols symbols})))
+
+(defmethod run-subcommand :refresh-earnings [_ opts _]
+  (let [ds      (ds-of opts)
+        symbols (resolve-symbols opts ds)]
+    (refresh/refresh-earnings! {:ds ds :symbols symbols})))
+
 (defmethod run-subcommand :refresh-universes [_ opts _]
   (refresh/refresh-universes! {:ds (ds-of opts)}))
 
@@ -146,7 +167,8 @@
       (finally (when-not (:conn opts) (ibkr/disconnect!))))))
 
 (def ^:private valid-phases
-  #{"portfolio" "daily" "intraday" "news" "fundamentals" "filings" "universes"})
+  #{"portfolio" "daily" "intraday" "news" "fundamentals" "filings"
+    "iv-daily" "short-interest" "earnings" "universes"})
 
 (defmethod run-subcommand :refresh-all [_ opts _]
   (let [cfg          (config/load-config (:profile opts))
@@ -161,14 +183,17 @@
                                        {:unknown unknown :valid valid-phases})))
         bars-kind    (or (:bars opts) "daily")
         in-only?     (fn [phase] (contains? only-set phase))
-        do-portfolio? (if only-set (in-only? "portfolio")    (not (:no-portfolio opts)))
-        do-daily?     (if only-set (in-only? "daily")        (#{"daily" "both"}    bars-kind))
-        do-intraday?  (if only-set (in-only? "intraday")     (#{"intraday" "both"} bars-kind))
-        do-news?      (if only-set (in-only? "news")         (not (:no-news opts)))
-        do-fund?      (if only-set (in-only? "fundamentals") (not (:no-fundamentals opts)))
-        do-filings?   (if only-set (in-only? "filings")      (not (:no-filings opts)))
-        do-univ?      (if only-set (in-only? "universes")    (not (:no-universes opts)))
-        needs-ib?     (or do-portfolio? do-daily? do-intraday? do-news?)
+        do-portfolio? (if only-set (in-only? "portfolio")      (not (:no-portfolio opts)))
+        do-daily?     (if only-set (in-only? "daily")          (#{"daily" "both"}    bars-kind))
+        do-intraday?  (if only-set (in-only? "intraday")       (#{"intraday" "both"} bars-kind))
+        do-news?      (if only-set (in-only? "news")           (not (:no-news opts)))
+        do-fund?      (if only-set (in-only? "fundamentals")   (not (:no-fundamentals opts)))
+        do-filings?   (if only-set (in-only? "filings")        (not (:no-filings opts)))
+        do-ivdaily?   (if only-set (in-only? "iv-daily")       (not (:no-iv-daily opts)))
+        do-short?     (if only-set (in-only? "short-interest") (not (:no-short-interest opts)))
+        do-earnings?  (if only-set (in-only? "earnings")       (not (:no-earnings opts)))
+        do-univ?      (if only-set (in-only? "universes")      (not (:no-universes opts)))
+        needs-ib?     (or do-portfolio? do-daily? do-intraday? do-news? do-ivdaily?)
         run-start     (System/currentTimeMillis)
         conn          (when needs-ib? (open-ib! cfg))
         opts'         (cond-> (assoc opts :ds ds)
@@ -193,13 +218,16 @@
     (println (format "refresh-all starting (ib=%s, bars=%s, universe=%s)"
                      (boolean conn) bars-kind (or (:universe opts) (:symbols opts) "?")))
     (try
-      (when do-portfolio? (run-phase! :portfolio    :refresh-portfolio))
-      (when do-daily?     (run-phase! :bars-daily   :refresh-daily))
-      (when do-intraday?  (run-phase! :bars-intraday :refresh-intraday))
-      (when do-news?      (run-phase! :news         :refresh-news))
-      (when do-fund?      (run-phase! :fundamentals :refresh-fundamentals))
-      (when do-filings?   (run-phase! :filings      :refresh-filings))
-      (when do-univ?      (run-phase! :universes    :refresh-universes))
+      (when do-portfolio? (run-phase! :portfolio       :refresh-portfolio))
+      (when do-daily?     (run-phase! :bars-daily      :refresh-daily))
+      (when do-intraday?  (run-phase! :bars-intraday   :refresh-intraday))
+      (when do-news?      (run-phase! :news            :refresh-news))
+      (when do-fund?      (run-phase! :fundamentals    :refresh-fundamentals))
+      (when do-filings?   (run-phase! :filings         :refresh-filings))
+      (when do-ivdaily?   (run-phase! :iv-daily        :refresh-iv-daily))
+      (when do-short?     (run-phase! :short-interest  :refresh-short-interest))
+      (when do-earnings?  (run-phase! :earnings        :refresh-earnings))
+      (when do-univ?      (run-phase! :universes       :refresh-universes))
       (finally
         (when conn (try (ibkr/disconnect!) (catch Throwable _)))))
     (let [elapsed (/ (- (System/currentTimeMillis) run-start) 1000.0)]

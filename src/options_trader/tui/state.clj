@@ -31,10 +31,7 @@
    :additional-dirs  []
    :input-history    []
    :history-idx      nil
-   ;; ── /compact carry-over ────────────────────────────────────────────────
-   ;; Set by handle-compact: a summary of the prior (now-reset) session that
-   ;; the next user message must carry as a prefix. Consumed (cleared) by
-   ;; spawn-agent! on first use.
+   ;; Carries a /compact summary into the next user message; consumed once.
    :prefix-message   nil
    :profile          nil
    :ibkr-config      nil
@@ -100,16 +97,13 @@
   (swap! state assoc :streaming? b))
 
 (defn queue-prefix-message!
-  "Store a string to be prepended to the next user message. Used by
-   /compact: after summarising the session and resetting the agent
-   session-id, the summary is queued here so the next turn starts with
-   it as background."
+  "Store a string to prepend to the next user message. /compact uses this
+   to carry a summary across the session reset."
   [s]
   (swap! state assoc :prefix-message s))
 
 (defn take-prefix-message!
-  "Atomic read-and-clear of :prefix-message. Returns the queued string
-   or nil. Call exactly once per turn from the spawn path."
+  "Atomic read-and-clear of :prefix-message. Call once per turn."
   []
   (let [[before _] (swap-vals! state assoc :prefix-message nil)]
     (:prefix-message before)))

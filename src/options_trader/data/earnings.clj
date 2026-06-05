@@ -6,7 +6,9 @@
    Loads without any network or file-system side-effects at namespace init time.
    No ib-re-actor or HTTP calls are made until an implementation is registered
    and explicitly invoked."
-  )
+  (:require [options-trader.data.sources :as sources]
+            [options-trader.db.queries.research-cache :as q]
+            [taoensso.timbre :as log]))
 
 ;;; ── Protocol ────────────────────────────────────────────────────────────────
 
@@ -36,11 +38,53 @@
   (normalise        [_ raw-record]         raw-record)
   (supported-symbols [_]                   :all))
 
-(def ^:private default-source
-  "Fallback source returned when no implementation is configured."
-  (UnavailableEarningsSource.))
+(def ^:private unavailable-source (UnavailableEarningsSource.))
 
-;;; ── Dispatch ────────────────────────────────────────────────────────────────
+(defn default-source []
+  (or (sources/default-source :earnings) unavailable-source))
+
+(deftype DuckDbEarningsSource [ds fallback]
+  IEarningsSource
+  (fetch-history [_ symbol params]
+    (let [limit (or (:quarters params) 12)
+          rows  (try (q/latest-earnings-history ds symbol limit)
+                     (catch Throwable t
+                       (log/warnf t "duckdb earnings history lookup failed for %s" symbol)
+                       nil))]
+      (cond
+        (seq rows)
+        (mapv (fn [r]
+                {:symbol           (:symbol r)
+                 :period           (:period r)
+                 :reported-at      (:reported_at r)
+                 :eps-actual       (:eps_actual r)
+                 :eps-estimate     (:eps_estimate r)
+                 :revenue-actual   (:rev_actual r)
+                 :revenue-estimate (:rev_estimate r)
+                 :surprise-pct     (:surprise_pct r)
+                 :source           :duckdb-cache})
+              rows)
+
+        fallback (fetch-history fallback symbol params)
+        :else    :unavailable)))
+
+  (fetch-calendar [_ {:keys [start end] :as date-range}]
+    (let [rows (try (q/earnings-calendar-range ds {:start start :end end})
+                    (catch Throwable _ nil))]
+      (cond
+        (seq rows)
+        (mapv (fn [r] {:symbol       (:symbol r)
+                       :report-date  (:report_date r)
+                       :report-time  (:report_time r)
+                       :eps-estimate (:eps_estimate r)
+                       :source       :duckdb-cache})
+              rows)
+
+        fallback (fetch-calendar fallback date-range)
+        :else    :unavailable)))
+
+  (normalise         [_ raw] raw)
+  (supported-symbols [_]     :all))
 
 (defmulti make-source
   "Construct an IEarningsSource from a config map.
@@ -49,7 +93,10 @@
   :type)
 
 (defmethod make-source :default [_cfg]
-  default-source)
+  (default-source))
+
+(defmethod make-source :duckdb-cache [{:keys [ds fallback]}]
+  (->DuckDbEarningsSource ds fallback))
 
 ;;; ── Public API (delegates to configured source) ─────────────────────────────
 
@@ -60,7 +107,7 @@
   ([symbol]
    (fetch-earnings-history symbol {}))
   ([symbol params]
-   (fetch-earnings-history symbol params default-source))
+   (fetch-earnings-history symbol params (default-source)))
   ([symbol params source]
    (fetch-history source symbol params)))
 
@@ -69,6 +116,6 @@
    Config key: :data-sources/:earnings
    date-range — map with :start and :end keys."
   ([date-range]
-   (fetch-earnings-calendar date-range default-source))
+   (fetch-earnings-calendar date-range (default-source)))
   ([date-range source]
    (fetch-calendar source date-range)))

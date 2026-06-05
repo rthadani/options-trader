@@ -1,8 +1,12 @@
 (ns options-trader.data.news
   (:require [options-trader.data.ibkr :as ibkr]
+            [options-trader.data.sources :as sources]
+            [options-trader.db.queries.research-cache :as q]
+            [cheshire.core :as json]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [taoensso.timbre :as log])
   (:import [java.time LocalDateTime]
            [java.time.format DateTimeFormatter]))
 
@@ -73,7 +77,10 @@
   (normalise        [_ raw-article]               raw-article)
   (supported-symbols [_]                          :all))
 
-(def ^:private default-source (UnavailableNewsSource.))
+(def ^:private unavailable-source (UnavailableNewsSource.))
+
+(defn default-source []
+  (or (sources/default-source :news) unavailable-source))
 
 (defn- ibkr-normalise [raw]
   {:title        (:headline raw)
@@ -146,23 +153,77 @@
   (normalise        [_ raw]             (ibkr-normalise raw))
   (supported-symbols [_]                :all))
 
+(deftype DuckDbNewsSource [ds fallback]
+  INewsSource
+  (fetch-headlines [_ symbol params callback]
+    (let [limit (or (:limit params) 25)
+          rows  (try (q/latest-news ds symbol limit)
+                     (catch Throwable t
+                       (log/warnf t "duckdb news lookup failed for %s" symbol)
+                       nil))]
+      (cond
+        (seq rows)
+        (do (doseq [r rows]
+              (callback {:type         :article
+                         :article-id   (:id r)
+                         :symbol       (:symbol r)
+                         :headline     (:title r)
+                         :url          (:url r)
+                         :provider-code (:source r)
+                         :time         (:published_at r)
+                         :sentiment    (:sentiment r)
+                         :body         (when-let [d (:data r)]
+                                         (try (json/parse-string d true)
+                                              (catch Throwable _ nil)))}))
+            (callback {:type :historical-news-end})
+            :ok)
+
+        fallback (fetch-headlines fallback symbol params callback)
+
+        :else
+        (do (callback {:type :error :symbol symbol
+                       :message "no cached news; run refresh-news"})
+            :unavailable))))
+
+  (fetch-sentiment [_ symbol params]
+    (let [rows (try (q/latest-news-titles ds symbol (or (:limit params) 25))
+                    (catch Throwable _ nil))]
+      (cond
+        (seq rows)
+        (let [scored (mapv (fn [r] (score-headline (:title r))) rows)
+              mean   (/ (reduce + scored) (double (count scored)))]
+          {:symbol symbol
+           :count (count scored)
+           :score mean
+           :sentiment (classify mean)
+           :source :duckdb-cache})
+
+        fallback (fetch-sentiment fallback symbol params)
+        :else    :unavailable)))
+
+  (normalise         [_ raw] raw)
+  (supported-symbols [_]     :all))
+
 (defmulti make-source
   "Construct a news source from a config map. Dispatches on :type."
   :type)
 
 (defmethod make-source :default [_cfg]
-  default-source)
+  (default-source))
 
 (defmethod make-source :ibkr [{:keys [ib-client]}]
   (IbkrNewsSource. ib-client))
+
+(defmethod make-source :duckdb-cache [{:keys [ds fallback]}]
+  (->DuckDbNewsSource ds fallback))
 
 (defn fetch-news-headlines
   "Fetch news headlines for symbol using source and callback.
    Returns the allocated req-id or :unavailable."
   ([symbol]
-   (fetch-news-headlines symbol {} default-source (fn [_])))
+   (fetch-news-headlines symbol {} (default-source) (fn [_])))
   ([symbol params]
-   (fetch-news-headlines symbol params default-source (fn [_])))
+   (fetch-news-headlines symbol params (default-source) (fn [_])))
   ([symbol params source]
    (fetch-news-headlines symbol params source (fn [_])))
   ([symbol params source callback]
@@ -171,9 +232,9 @@
 (defn fetch-news-sentiment
   "Fetch sentiment for symbol using source. Returns a sentiment map or :unavailable."
   ([symbol]
-   (fetch-news-sentiment symbol {} default-source))
+   (fetch-news-sentiment symbol {} (default-source)))
   ([symbol params]
-   (fetch-news-sentiment symbol params default-source))
+   (fetch-news-sentiment symbol params (default-source)))
   ([symbol params source]
    (fetch-sentiment source symbol params)))
 

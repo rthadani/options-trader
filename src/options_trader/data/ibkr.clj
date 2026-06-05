@@ -739,11 +739,18 @@
 
 ;;; ── Request wrappers ────────────────────────────────────────────────────────
 
-(defn req-historical-bars [conn contract bar-size duration cb]
-  (pacer/record-hist-request! (:symbol contract) bar-size)
-  (dispatch-batch! conn {:type :req-historical-bars
-                          :contract contract :bar-size bar-size :duration duration}
-                   cb))
+(defn req-historical-bars
+  "Request a historical bar series. 4-arg form defaults what-to-show to
+   :trades; 5-arg form takes an explicit keyword (:option-implied-volatility,
+   :historical-volatility, :midpoint, …)."
+  ([conn contract bar-size duration cb]
+   (req-historical-bars conn contract bar-size duration :trades cb))
+  ([conn contract bar-size duration what-to-show cb]
+   (pacer/record-hist-request! (:symbol contract) bar-size)
+   (dispatch-batch! conn {:type :req-historical-bars
+                           :contract contract :bar-size bar-size
+                           :duration duration :what-to-show what-to-show}
+                    cb)))
 
 (defn req-historical-iv [conn contract expiry cb]
   (dispatch-batch! conn {:type :req-historical-iv

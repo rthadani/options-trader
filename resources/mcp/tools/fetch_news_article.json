@@ -1,0 +1,12 @@
+{
+  "name": "fetch_news_article",
+  "description": "Fetch the full body of a single news article by its provider code and article id. Use this after fetch_news returns a headline list — each headline carries provider_code + article_id which feed this tool. Returns {:article-type (0=text, 1=HTML, 2=binary) :article-text :provider-code :article-id} or :unavailable.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "provider_code": {"type": "string", "description": "News provider code from the headline (e.g. \"BRFG\", \"DJNL\")."},
+      "article_id":    {"type": "string", "description": "Article id from the headline."}
+    },
+    "required": ["provider_code", "article_id"]
+  }
+}

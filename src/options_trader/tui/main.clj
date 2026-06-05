@@ -294,7 +294,7 @@
     (a/>!! refresh-chan :refresh)
     true))
 
-(declare maybe-autocompact!)  ;; defined below near handle-compact
+(declare maybe-autocompact!)
 
 (defn spawn-agent! [user-msg]
   (let [agent         (:agent @st/state :claude)
@@ -304,13 +304,9 @@
         cwd           (System/getProperty "user.dir")
         additional    (:additional-dirs @st/state [])
         system-prompt (rt-ctx/build {})
-        ;; Auto-compact if the scope is over the token threshold. Runs
-        ;; before take-prefix-message! so the freshly-queued summary is
-        ;; picked up on this same turn.
+        ;; Order matters: auto-compact may queue a prefix that take-
+        ;; prefix-message! consumes on this same turn.
         _             (maybe-autocompact! scope)
-        ;; /compact (manual or auto) stages a summary of the prior
-        ;; session here; consume it once so the next turn carries the
-        ;; summary as context.
         prefix        (st/take-prefix-message!)
         user-msg      (cond->> user-msg
                         prefix (str prefix "\n\n"))]
@@ -665,20 +661,24 @@
        "briefing TO yourself, not as prose."))
 
 (def ^:dynamic *auto-compact-threshold*
-  "Cumulative input-token threshold per scope for auto-compact. Set
-   below the model context cap to leave room for the current turn +
-   response. 100k = 50% of a 200k window — earlier compaction trades
-   some context fidelity for more headroom per turn. Dynamic so tests
-   / users can rebind without redeploying."
+  "Auto-compact when scope's cumulative input-tokens exceed this.
+   100k ≈ 50% of a 200k window. Overridable via --compact-threshold N
+   on the launcher, which alter-var-roots this at startup."
   100000)
+
+(defn set-auto-compact-threshold!
+  "Set the auto-compact token threshold for the running session. The
+   var is dynamic for tests/REPL overrides; alter-var-root so the change
+   is visible in the async event-loop threads that drive maybe-autocompact!."
+  [n]
+  (alter-var-root #'*auto-compact-threshold* (constantly (long n))))
 
 (defn- scope-input-tokens [scope]
   (or (-> (conv/current-claude-session scope) :tokens-input) 0))
 
 (defn- do-compact!
-  "Core compact: synchronously summarise via llm/complete, drop sessions,
-   queue the summary as next-msg prefix. Returns the summary string on
-   success, or nil if llm/complete failed."
+  "Summarise via llm/complete, drop sessions, queue the summary as the
+   next-msg prefix. Returns the summary or nil on llm failure."
   [scope]
   (try
     (let [summary (llm/complete {} compact-prompt)]
@@ -701,13 +701,7 @@
         (st/append-chat! :system "/compact failed — see logs"))
       (a/>!! refresh-chan :refresh))))
 
-(defn- maybe-autocompact!
-  "If the current scope's cumulative input-tokens exceed the threshold,
-   run a compact synchronously before the next user message ships.
-   The queued summary is consumed by spawn-agent!'s take-prefix-message!
-   on the same turn, so the user's message goes out with the briefing
-   already prepended."
-  [scope]
+(defn- maybe-autocompact! [scope]
   (let [tokens *auto-compact-threshold*
         used   (scope-input-tokens scope)]
     (when (> used tokens)
@@ -990,7 +984,8 @@
 
 (defn- init-tui-state!
   "Initialize state atom and run any startup refresh."
-  [{:keys [ds account-id ibkr-config profile initial-message]}]
+  [{:keys [ds account-id ibkr-config profile initial-message compact-threshold]}]
+  (when compact-threshold (set-auto-compact-threshold! compact-threshold))
   (st/reset-state!)
   ;; Any state mutation (stream position upsert, status change, scope switch,
   ;; etc.) triggers a render. Without this watch, background updates from the

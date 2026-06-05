@@ -22,6 +22,10 @@
   [[nil  "--headless"        "Run without TUI"]
    [nil  "--check-config"    "Validate resources/config.edn and exit 0/1"]
    ["-p" "--profile PROFILE" "Config profile" :default "dev"]
+   [nil  "--compact-threshold N"
+         "Auto-compact when scope input-tokens exceed N (default 100000)"
+         :parse-fn parse-long
+         :validate [pos? "must be a positive integer"]]
    ["-h" "--help"            "Show help"]])
 
 (defn- seed-from-resource!
@@ -206,7 +210,9 @@
                    "could not be migrated; refusing to start on an unmigrated schema.")
           (System/exit 1)))
       (let [ds (db/datasource cfg)]
-        (tui/start! {:ds              ds
-                     :profile         (:profile options)
-                     :ibkr-config     (assoc (:ibkr cfg) :client-id tui-client-id)
-                     :initial-message "Welcome to Options Trader. Type /help for commands, /quit to exit."})))))
+        (tui/start! (cond-> {:ds              ds
+                             :profile         (:profile options)
+                             :ibkr-config     (assoc (:ibkr cfg) :client-id tui-client-id)
+                             :initial-message "Welcome to Options Trader. Type /help for commands, /quit to exit."}
+                      (:compact-threshold options)
+                      (assoc :compact-threshold (:compact-threshold options))))))))

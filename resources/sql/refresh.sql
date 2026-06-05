@@ -1,10 +1,6 @@
--- Named queries used by the refresh pipeline. Loaded by
--- options-trader.db.queries.refresh via hugsql/def-sqlvec-fns.
--- Each -- :name block becomes a fn returning [sql & params]; the API
--- layer hands those to next.jdbc. Batch INSERTs live here too so all
--- SQL lives in one place; the API fn does execute-batch! with the
--- string portion. Keyword-style params (:foo) bind from the calling
--- map; ? placeholders are used inside batch INSERT VALUES lists.
+-- Refresh-pipeline queries. Loaded by options-trader.db.queries.refresh
+-- via hugsql. Batch INSERTs use ? placeholders and ship through
+-- next.jdbc/execute-batch!; single-row queries use :keyword params.
 
 -- :name next-refresh-log-id :? :1
 SELECT COALESCE(MAX(id), 0) + 1 AS n FROM refresh_log;
@@ -79,3 +75,52 @@ ON CONFLICT DO NOTHING;
 
 -- :name delete-universe-member :! :n
 DELETE FROM universe_members WHERE universe = :universe AND symbol = :symbol;
+
+-- ── iv_daily ─────────────────────────────────────────────────────────
+
+-- :name latest-iv-date :? :1
+SELECT MAX(iv_date) AS d FROM iv_daily WHERE symbol = :symbol;
+
+-- :name upsert-iv-row :! :n
+INSERT INTO iv_daily (symbol, iv_date, iv30, hv30)
+VALUES (:symbol, :iv-date, :iv30, :hv30)
+ON CONFLICT (symbol, iv_date) DO UPDATE SET
+  iv30 = COALESCE(excluded.iv30, iv30),
+  hv30 = COALESCE(excluded.hv30, hv30);
+
+-- ── short_interest ───────────────────────────────────────────────────
+
+-- :name upsert-short-interest :! :n
+INSERT INTO short_interest
+  (symbol, settlement_date, short_interest, float_shares,
+   days_to_cover, short_pct_float)
+VALUES
+  (:symbol, :settlement-date, :short-interest, :float-shares,
+   :days-to-cover, :short-pct-float)
+ON CONFLICT (symbol, settlement_date) DO UPDATE SET
+  short_interest  = excluded.short_interest,
+  float_shares    = excluded.float_shares,
+  days_to_cover   = excluded.days_to_cover,
+  short_pct_float = excluded.short_pct_float;
+
+-- ── earnings ─────────────────────────────────────────────────────────
+
+-- :name upsert-earnings-event :! :n
+INSERT INTO earnings_events
+  (symbol, period, reported_at, eps_actual, eps_estimate, surprise_pct)
+VALUES
+  (:symbol, :period, :reported-at, :eps-actual, :eps-estimate, :surprise-pct)
+ON CONFLICT (symbol, period) DO UPDATE SET
+  reported_at  = excluded.reported_at,
+  eps_actual   = excluded.eps_actual,
+  eps_estimate = excluded.eps_estimate,
+  surprise_pct = excluded.surprise_pct;
+
+-- :name upsert-earnings-calendar :! :n
+INSERT INTO earnings_calendar
+  (symbol, report_date, report_time, eps_estimate)
+VALUES
+  (:symbol, :report-date, :report-time, :eps-estimate)
+ON CONFLICT (symbol, report_date) DO UPDATE SET
+  report_time  = excluded.report_time,
+  eps_estimate = excluded.eps_estimate;

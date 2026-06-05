@@ -1,5 +1,8 @@
 (ns options-trader.data.fundamentals
-  (:require [options-trader.data.ibkr :as ibkr]
+  (:require [cheshire.core            :as json]
+            [options-trader.data.ibkr :as ibkr]
+            [options-trader.data.sources :as sources]
+            [options-trader.db.queries.research-cache :as qcache]
             [edgar.api                :as edgar]
             [taoensso.timbre          :as log]))
 
@@ -160,7 +163,10 @@
   (supported-symbols [_]                           :all)
   (supported-periods [_]                           #{:annual :quarterly}))
 
-(def ^:private default-source (UnavailableFundamentalsSource.))
+(def ^:private unavailable-source (UnavailableFundamentalsSource.))
+
+(defn default-source []
+  (or (sources/default-source :fundamentals) unavailable-source))
 
 (deftype IbkrFundamentalsSource [ib-client]
   IFundamentalsSource
@@ -196,15 +202,39 @@
   (supported-symbols [_]     :all)
   (supported-periods [_]     #{:annual :quarterly}))
 
+(deftype DuckDbFundamentalsSource [ds fallback]
+  IFundamentalsSource
+  (fetch [_ symbol _params callback]
+    (let [raw-data (try (qcache/latest-fundamentals ds symbol)
+                        (catch Throwable t
+                          (log/warnf t "duckdb fundamentals lookup failed for %s" symbol)
+                          nil))
+          payload  (when raw-data
+                     (try (json/parse-string raw-data true)
+                          (catch Throwable _ nil)))]
+      (cond
+        payload  (do (callback [(assoc payload :source :duckdb-cache)]) :ok)
+        fallback (fetch fallback symbol _params callback)
+        :else    (do (callback [{:type :error :symbol symbol
+                                 :message "no cached fundamentals; run refresh-fundamentals"}])
+                     :unavailable))))
+  ;; Cached payload was written post-normalise — pass through unchanged.
+  (normalise         [_ raw] raw)
+  (supported-symbols [_]     :all)
+  (supported-periods [_]     #{:annual :quarterly}))
+
 (defmulti make-source
   "Construct a fundamentals source from a config map. Dispatches on :type."
   :type)
 
 (defmethod make-source :default [_cfg]
-  default-source)
+  (default-source))
 
 (defmethod make-source :ibkr [{:keys [ib-client]}]
   (IbkrFundamentalsSource. ib-client))
+
+(defmethod make-source :duckdb-cache [{:keys [ds fallback]}]
+  (->DuckDbFundamentalsSource ds fallback))
 
 (defmethod make-source :edgar [{:keys [user-agent]}]
   (EdgarFundamentalsSource. user-agent))
@@ -213,9 +243,9 @@
   "Fetch fundamental data for symbol using source and callback.
    Returns the allocated req-id or :unavailable."
   ([symbol]
-   (fetch-fundamentals symbol {} default-source (fn [_])))
+   (fetch-fundamentals symbol {} (default-source) (fn [_])))
   ([symbol params]
-   (fetch-fundamentals symbol params default-source (fn [_])))
+   (fetch-fundamentals symbol params (default-source) (fn [_])))
   ([symbol params source]
    (fetch-fundamentals symbol params source (fn [_])))
   ([symbol params source callback]
@@ -224,6 +254,6 @@
 (defn normalise-fundamentals
   "Normalise raw-record using source's normaliser. Returns the normalised map."
   ([raw-record]
-   (normalise-fundamentals raw-record default-source))
+   (normalise-fundamentals raw-record (default-source)))
   ([raw-record source]
    (normalise source raw-record)))
