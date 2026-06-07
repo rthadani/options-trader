@@ -13,7 +13,8 @@
    history, the other tracks claude's internal session for resumption."
   (:require [cheshire.core   :as json]
             [clojure.edn     :as edn]
-            [clojure.java.io :as io])
+            [clojure.java.io :as io]
+            [clojure.string  :as str])
   (:import [java.util UUID]))
 
 ;;; ── Existing session API (UUID + turns) ─────────────────────────────────────
@@ -219,3 +220,143 @@
   "Test helper — clear the in-memory scope store. Does NOT touch the persist file."
   []
   (reset! claude-sessions {}))
+
+;;; ── On-disk transcript scanner ──────────────────────────────────────────────
+
+(defn- jsonl-first-user-text
+  "Read jsonl until the first user-role message with text content; return a
+   single-line preview trimmed to ≤80 chars, or nil. Skips tool-result wrappers
+   and synthetic system-reminder lines that don't represent real user input."
+  [^java.io.File f]
+  (try
+    (with-open [rdr (io/reader f)]
+      (loop [ls (line-seq rdr)]
+        (when-let [line (first ls)]
+          (let [obj  (try (json/parse-string line true) (catch Throwable _ nil))
+                kind (or (:type obj) (some-> obj :role))
+                msg  (:message obj)
+                role (or (:role msg) (:role obj))
+                content (or (:content msg) (:content obj))
+                text (cond
+                       (string? content) content
+                       (sequential? content)
+                       (some #(when (string? (:text %)) (:text %)) content)
+                       :else nil)]
+            (if (and (or (= "user" kind) (= "user" role))
+                     (string? text)
+                     (not (str/blank? text))
+                     (not (str/starts-with? text "<")))
+              (let [t (-> text (str/replace #"\s+" " ") str/trim)]
+                (subs t 0 (min 80 (count t))))
+              (recur (rest ls)))))))
+    (catch Throwable _ nil)))
+
+(defn- jsonl-files [^java.io.File root]
+  (when (and root (.isDirectory root))
+    (->> (file-seq root)
+         (filter (fn [^java.io.File f]
+                   (and (.isFile f)
+                        (str/ends-with? (.getName f) ".jsonl")
+                        (not (str/includes? (.getAbsolutePath f) "/subagents/"))))))))
+
+(defn- claude-id-from-name [^String n]
+  (str/replace n #"\.jsonl$" ""))
+
+(defn- pi-id-from-name [^String n]
+  (-> n (str/replace #"\.jsonl$" "") (str/split #"_") second))
+
+(defn- text-from-content
+  "Coerce a message :content value (string, or array of content blocks) into a
+   single text string. Returns nil if nothing text-like is in there — strips
+   tool_use / tool_result / thinking / toolCall / toolResult blocks."
+  [content]
+  (cond
+    (string? content)
+    (when-not (str/blank? content) content)
+
+    (sequential? content)
+    (let [texts (keep #(when (= "text" (:type %)) (:text %)) content)]
+      (when (seq texts) (str/join "\n" texts)))
+
+    :else nil))
+
+(defn- claude-event->turn
+  "Extract a {:role :text} turn from a claude jsonl event, or nil to skip."
+  [{:keys [type message]}]
+  (when (and message (#{"user" "assistant"} type))
+    (let [role    (:role message)
+          content (:content message)
+          text    (text-from-content content)]
+      (when (and text (#{"user" "assistant"} role))
+        {:role (keyword role) :text text}))))
+
+(defn- pi-event->turn
+  "Extract a {:role :text} turn from a pi jsonl event, or nil to skip.
+   Pi wraps every conversational item under :type \"message\" with :message
+   holding {:role :content}. toolResult / toolCall blocks are dropped."
+  [{:keys [type message]}]
+  (when (and message (= "message" type))
+    (let [role    (:role message)
+          content (:content message)
+          text    (text-from-content content)]
+      (when (and text (#{"user" "assistant"} role))
+        {:role (keyword role) :text text}))))
+
+(defn replay-turns
+  "Read a session jsonl and return an ordered vec of {:role :user|:assistant
+   :text str} turns, skipping non-conversational events (tool calls, thinking
+   blocks, system inits, queue ops, etc).
+
+   `agent` is :claude or :pi — the on-disk schemas differ."
+  [agent ^String path]
+  (let [parse (case agent :claude claude-event->turn :pi pi-event->turn)]
+    (try
+      (with-open [rdr (io/reader path)]
+        (into []
+              (keep (fn [line]
+                      (when-let [obj (try (json/parse-string line true)
+                                          (catch Throwable _ nil))]
+                        (parse obj))))
+              (line-seq rdr)))
+      (catch Throwable _ []))))
+
+(defn list-all-transcripts
+  "Return a vector of transcript rows for every on-disk jsonl under
+   `runtime-claude-dir/projects/**` and `pi-session-dir/`, sorted by mtime desc.
+
+   Each row:
+     {:agent       :claude | :pi
+      :session-id  string  (derived from filename)
+      :file        absolute-path string
+      :scope-key   the scope-key currently bound to this session-id, or nil
+      :preview     ≤80 chars of the first user message, or nil
+      :mtime       file modification time (epoch ms)}"
+  [{:keys [runtime-claude-dir pi-session-dir]}]
+  (let [sessions  @claude-sessions
+        scope-of-claude (into {} (keep (fn [[k v]]
+                                         (when-let [id (:claude-session-id v)] [id k]))
+                                       sessions))
+        scope-of-pi     (into {} (keep (fn [[k v]]
+                                         (when-let [id (:pi-session-id v)] [id k]))
+                                       sessions))
+        claude-root (when runtime-claude-dir (io/file runtime-claude-dir "projects"))
+        pi-root     (when pi-session-dir     (io/file pi-session-dir))
+        rows (concat
+               (for [^java.io.File f (jsonl-files claude-root)
+                     :let [sid (claude-id-from-name (.getName f))]]
+                 {:agent      :claude
+                  :session-id sid
+                  :file       (.getAbsolutePath f)
+                  :scope-key  (get scope-of-claude sid)
+                  :preview    (jsonl-first-user-text f)
+                  :mtime      (.lastModified f)})
+               (for [^java.io.File f (jsonl-files pi-root)
+                     :let [sid (pi-id-from-name (.getName f))]
+                     :when sid]
+                 {:agent      :pi
+                  :session-id sid
+                  :file       (.getAbsolutePath f)
+                  :scope-key  (get scope-of-pi sid)
+                  :preview    (jsonl-first-user-text f)
+                  :mtime      (.lastModified f)}))]
+    (vec (sort-by :mtime > rows))))

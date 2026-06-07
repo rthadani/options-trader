@@ -135,3 +135,80 @@
   (conv/load-claude-sessions! "/tmp/definitely-not-a-real-file.edn")
   (is (= [] (conv/list-claude-sessions))
       "loading from a missing path leaves the store empty, not crashed"))
+
+(defn- write-jsonl [^java.io.File f lines]
+  (.mkdirs (.getParentFile f))
+  (spit f (str (clojure.string/join "\n" lines) "\n")))
+
+(deftest replay-turns-claude-keeps-text-skips-noise
+  (let [f (java.io.File. (System/getProperty "java.io.tmpdir")
+                         (str "ot-claude-" (System/currentTimeMillis) ".jsonl"))]
+    (try
+      (spit f (clojure.string/join "\n"
+                ["{\"type\":\"queue-operation\",\"operation\":\"enqueue\"}"
+                 "{\"type\":\"system\",\"subtype\":\"init\"}"
+                 "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"first question\"}}"
+                 "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"first answer\"},{\"type\":\"tool_use\",\"name\":\"x\"}]}}"
+                 "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"x\"}]}}"
+                 "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"second answer\"}]}}"
+                 "{\"type\":\"result\",\"usage\":{}}"]))
+      (let [turns (conv/replay-turns :claude (.getAbsolutePath f))]
+        (is (= 3 (count turns)) "tool_result user message and non-text blocks are dropped")
+        (is (= [:user :assistant :assistant] (mapv :role turns)))
+        (is (= ["first question" "first answer" "second answer"]
+               (mapv :text turns))))
+      (finally (.delete f)))))
+
+(deftest replay-turns-pi-keeps-text-skips-thinking-and-toolresult
+  (let [f (java.io.File. (System/getProperty "java.io.tmpdir")
+                         (str "ot-pi-" (System/currentTimeMillis) ".jsonl"))]
+    (try
+      (spit f (clojure.string/join "\n"
+                ["{\"type\":\"session\",\"id\":\"s1\"}"
+                 "{\"type\":\"model_change\",\"provider\":\"minimax\"}"
+                 "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"hi pi\"}}"
+                 "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\"},{\"type\":\"text\",\"text\":\"hello back\"}]}}"
+                 "{\"type\":\"message\",\"message\":{\"role\":\"toolResult\",\"content\":[{\"type\":\"text\",\"text\":\"ignored\"}]}}"]))
+      (let [turns (conv/replay-turns :pi (.getAbsolutePath f))]
+        (is (= 2 (count turns)) "session/model events and toolResult are dropped")
+        (is (= [:user :assistant] (mapv :role turns)))
+        (is (= ["hi pi" "hello back"] (mapv :text turns))
+            "thinking blocks stripped; only :type \"text\" content survives"))
+      (finally (.delete f)))))
+
+(deftest replay-turns-missing-file-returns-empty
+  (is (= [] (conv/replay-turns :claude "/tmp/definitely-not-here.jsonl"))))
+
+(deftest list-all-transcripts-discovers-both-agents-and-derives-session-ids
+  (let [root  (java.io.File. (System/getProperty "java.io.tmpdir")
+                             (str "ot-sessions-" (System/currentTimeMillis)))
+        c-dir (java.io.File. root "claude/projects/-some-project")
+        p-dir (java.io.File. root "pi/sessions")
+        c-id  "11111111-1111-1111-1111-111111111111"
+        p-id  "22222222-2222-2222-2222-222222222222"]
+    (try
+      (write-jsonl (java.io.File. c-dir (str c-id ".jsonl"))
+                   ["{\"type\":\"system\",\"meta\":{}}"
+                    "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hello claude\"}}"])
+      (write-jsonl (java.io.File. p-dir (str "2026-06-07T10-00-00Z_" p-id ".jsonl"))
+                   ["{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello pi\"}]}"])
+      ;; Subagent files must NOT appear in the listing.
+      (write-jsonl (java.io.File. c-dir (str "subagents/agent-xyz.jsonl"))
+                   ["{\"type\":\"user\",\"message\":{\"content\":\"nested helper\"}}"])
+      (conv/record-claude-session! "AAPL" c-id)
+      (let [rows (conv/list-all-transcripts
+                   {:runtime-claude-dir (.getAbsolutePath (java.io.File. root "claude"))
+                    :pi-session-dir     (.getAbsolutePath p-dir)})
+            ids (set (map :session-id rows))]
+        (is (= 2 (count rows)) "two top-level transcripts, subagent excluded")
+        (is (contains? ids c-id) "claude session-id derived from filename")
+        (is (contains? ids p-id) "pi session-id derived from <ts>_<uuid> filename")
+        (let [c-row (first (filter #(= :claude (:agent %)) rows))
+              p-row (first (filter #(= :pi     (:agent %)) rows))]
+          (is (= "AAPL"     (:scope-key c-row))   "tracked scope shows up")
+          (is (= "hello claude" (:preview c-row)) "first user msg extracted (claude)")
+          (is (nil? (:scope-key p-row))           "untracked pi session is orphan")
+          (is (= "hello pi" (:preview p-row))     "first user msg extracted (pi, array content)")))
+      (finally
+        (doseq [f (reverse (file-seq root))]
+          (.delete f))))))

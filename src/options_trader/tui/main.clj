@@ -716,14 +716,74 @@
           "auto-compact failed; sending your message without compaction"))
       (a/>!! refresh-chan :refresh))))
 
-(defn handle-sessions [_args _ds]
-  (let [rows (conv/list-claude-sessions)]
-    (if (empty? rows)
-      (st/append-chat! :system "no claude sessions tracked")
-      (doseq [{:keys [scope-key tokens-input turn-count]} rows]
+(defonce ^:private last-sessions-list (atom []))
+
+(defn- fmt-when [^long mtime]
+  (let [zdt (.. (java.time.Instant/ofEpochMilli mtime)
+                (atZone (java.time.ZoneId/systemDefault)))]
+    (.format zdt (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm"))))
+
+(defn- fmt-session-row [i {:keys [agent scope-key preview mtime]}]
+  (format "%3d  %-6s %-10s %-16s  %s"
+          i (name agent)
+          (if scope-key (name scope-key) "(orphan)")
+          (fmt-when mtime)
+          (or preview "(no preview)")))
+
+(defn- resume-session-by-index [n]
+  (let [rows @last-sessions-list]
+    (cond
+      (empty? rows)
+      (st/append-chat! :system "no listing yet — run /sessions first")
+
+      (or (nil? n) (< n 1) (> n (count rows)))
+      (st/append-chat! :system (format "usage: /sessions resume <1-%d>" (count rows)))
+
+      :else
+      (let [{:keys [agent session-id scope-key file]} (nth rows (dec n))
+            target-scope (or scope-key :scratch)
+            turns        (conv/replay-turns agent file)]
+        (case agent
+          :claude (conv/record-claude-session! target-scope session-id)
+          :pi     (conv/record-pi-session!     target-scope session-id))
+        (swap! st/state assoc :scope target-scope :agent agent)
+        (try (conv/persist-claude-sessions!) (catch Throwable _ nil))
         (st/append-chat! :system
-          (format "  %s  tokens=%d  turns=%d"
-                  (name scope-key) (or tokens-input 0) (or turn-count 0)))))))
+          (format "── resuming %s session %s (scope: %s) — %d turns ──"
+                  (name agent)
+                  (subs session-id 0 (min 8 (count session-id)))
+                  (name target-scope)
+                  (count turns)))
+        (doseq [{:keys [role text]} turns]
+          (st/append-chat! role text))
+        (st/append-chat! :system
+          "── end of replay — type a message to continue ──")))))
+
+(defn handle-sessions [args _ds]
+  (let [subcmd (some-> (first args) str/lower-case)]
+    (cond
+      (or (nil? subcmd) (= "list" subcmd))
+      (let [rows (conv/list-all-transcripts
+                   {:runtime-claude-dir (paths/runtime-claude-dir)
+                    :pi-session-dir     (paths/pi-session-dir)})]
+        (if (empty? rows)
+          (st/append-chat! :system "no transcripts on disk")
+          (do
+            (reset! last-sessions-list rows)
+            (st/append-chat! :system
+              "  #  agent   scope      when              preview")
+            (doseq [[i r] (map-indexed vector rows)]
+              (st/append-chat! :system (fmt-session-row (inc i) r)))
+            (st/append-chat! :system
+              "  /sessions resume <n> to pick one"))))
+
+      (= "resume" subcmd)
+      (let [n (try (Long/parseLong (str (second args)))
+                   (catch Throwable _ nil))]
+        (resume-session-by-index n))
+
+      :else
+      (st/append-chat! :system "usage: /sessions | /sessions resume <n>"))))
 
 (defn handle-help [_args _ds]
   (st/append-chat! :system
@@ -740,7 +800,8 @@
        "  /reset                          drop claude+pi sessions for current scope"
        "  /compact                        summarise + reset sessions, queue summary as next-msg prefix"
        "                                  (auto-triggers when scope tokens exceed 100k)"
-       "  /sessions                       list tracked claude sessions"
+       "  /sessions                       list on-disk transcripts (both agents)"
+       "  /sessions resume <n>            resume the n-th transcript from /sessions"
        ""
        "Hybrid (TUI side-effect + tells the agent):"
        "  /investigate <SYM>              focus scope on SYM + ask agent for overview"
