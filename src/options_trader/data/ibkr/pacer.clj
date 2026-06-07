@@ -121,6 +121,14 @@
    (count (prune-window (or @(:hist-global pacer) []) (System/currentTimeMillis))))
   ([] (hist-global-count default-pacer)))
 
+(defn reset-hist-global!
+  "Clear the connection-wide historical-data window. IB resets its own
+   60/10-min counter when the API client disconnects, so the in-process
+   tally is also stale after a reconnect — call this on reconnect to
+   keep them in sync."
+  ([pacer] (reset! (:hist-global pacer) []))
+  ([]      (reset-hist-global! default-pacer)))
+
 (defn can-request-historical?
   ([pacer symbol bar-size]
    (and (< (hist-request-count pacer symbol bar-size) hist-window-max)

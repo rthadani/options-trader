@@ -465,21 +465,37 @@
         (<= days 90) "3 M"
         :else        "1 Y"))))
 
+(defn- ib-reconnect!
+  "Drop and reopen the IB API connection with the same credentials. IB
+   resets its own 60-per-10-min historical counter per-connection, so
+   the reconnect gives us a fresh window. Mirrors that on the client
+   side by clearing pacer's hist-global. Throws if reconnect fails."
+  [{:keys [host port client-id]}]
+  (log/infof "iv-daily: reconnecting to TWS (host=%s port=%s client-id=%s) to reset 60/10-min window"
+             host port client-id)
+  (try (ibkr/disconnect!) (catch Throwable _))
+  (pacer/reset-hist-global!)
+  (let [c (ibkr/connect! host port (or client-id 1))]
+    (when (= :unavailable c)
+      (throw (ex-info "iv-daily: reconnect failed — TWS unavailable"
+                      {:host host :port port :client-id client-id})))
+    c))
+
 (defn- ib-iv-bars
-  [conn sym duration timeout-ms]
-  ;; Block until IB has a slot in the 60-per-10-min window. Log when
-  ;; we're about to wait so the run doesn't look hung.
+  [conn-atom ibkr-cfg sym duration timeout-ms]
   (when-not (pacer/can-request-historical? pacer/default-pacer sym "1 day")
-    (log/infof "iv-daily: %s waiting for IB slot (%d/%d used in 10-min window)"
-               sym (pacer/hist-global-count) 60))
-  (pacer/await-hist-slot! pacer/default-pacer sym "1 day")
+    (if ibkr-cfg
+      (reset! conn-atom (ib-reconnect! ibkr-cfg))
+      (do (log/infof "iv-daily: %s waiting for IB slot (%d/%d used in 10-min window)"
+                     sym (pacer/hist-global-count) 60)
+          (pacer/await-hist-slot! pacer/default-pacer sym "1 day"))))
   (await-batch
     (fn [cb]
       (ibkr/req-historical-bars
-        conn (ibkr/->contract sym) "1 day" duration
+        @conn-atom (ibkr/->contract sym) "1 day" duration
         :option-implied-volatility cb))
     timeout-ms
-    (fn [rid] (ibkr/cancel-sub! conn rid))))
+    (fn [rid] (ibkr/cancel-sub! @conn-atom rid))))
 
 (defn- bars-close-series [ds sym]
   (->> (jdbc/execute! ds
@@ -533,20 +549,26 @@
 (defn refresh-iv-daily!
   "Pull daily IV30 from IB and compute HV30 locally from bars_daily,
    merge by date, upsert into iv_daily. Skips symbols where iv_daily is
-   already as fresh as bars_daily."
-  [{:keys [conn ds symbols timeout-ms] :or {timeout-ms 15000}}]
+   already as fresh as bars_daily.
+
+   When :ibkr-config (host/port/client-id) is supplied, the worker
+   disconnects and reconnects on hitting IB's 60/10-min window — IB
+   resets the counter per-connection, so a reconnect costs ~1s instead
+   of a multi-minute wait. Forces parallelism=1 because the reconnect
+   would orphan in-flight requests; without ibkr-config it falls back
+   to blocking on await-hist-slot!."
+  [{:keys [conn ds symbols timeout-ms ibkr-config] :or {timeout-ms 15000}}]
   (with-log ds :iv-daily nil
-    ;; *fail-fast-consecutive* relaxed because per-symbol IV gaps cluster
-    ;; legitimately (no-options-data symbols don't indicate broken TWS).
-    (binding [*parallelism* (min *parallelism* 4)
+    (binding [*parallelism* (if ibkr-config 1 (min *parallelism* 4))
               *fail-fast-consecutive* 25]
-      (each-symbol! :iv-daily symbols
-        (fn [sym]
-          (if (iv-is-fresh? ds sym)
-            {:rows 0}
-            (let [last-d (q/latest-iv-date ds sym)
-                  dur    (iv-duration-for-gap last-d)
-                  iv     (ib-iv-bars conn sym dur timeout-ms)]
+      (let [conn-atom (atom conn)]
+        (each-symbol! :iv-daily symbols
+          (fn [sym]
+            (if (iv-is-fresh? ds sym)
+              {:rows 0}
+              (let [last-d (q/latest-iv-date ds sym)
+                    dur    (iv-duration-for-gap last-d)
+                    iv     (ib-iv-bars conn-atom ibkr-config sym dur timeout-ms)]
               (cond
                 (= :unavailable iv) :unavailable
                 (= ::timeout    iv) {:timeout? true}
@@ -559,7 +581,7 @@
                     (q/upsert-iv-row! ds {:symbol sym :iv-date d
                                            :iv30 (get iv-by-date d)
                                            :hv30 (get hv-by-date d)}))
-                  {:rows (count dates)})))))))))
+                  {:rows (count dates)}))))))))))
 
 ;;; ── Short interest (Yahoo) ─────────────────────────────────────────────────
 

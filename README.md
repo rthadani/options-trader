@@ -95,13 +95,14 @@ or touched.
 │   ├── .credentials.json                      symlink → ~/.claude/.credentials.json
 │   │                                          (carries your Pro/Max login)
 │   ├── agents/                                sub-agent definitions
-│   │   ├── options-strategist.md
 │   │   ├── earnings-preview.md
 │   │   └── position-risk.md
 │   ├── skills/                                skill definitions
 │   │   ├── option-chain/SKILL.md
 │   │   ├── filings-research/SKILL.md
-│   │   └── iv-analysis/SKILL.md
+│   │   ├── iv-analysis/SKILL.md
+│   │   ├── market-sages/SKILL.md
+│   │   └── options-strategy-advisor/SKILL.md
 │   └── projects/                              per-session history
 └── runtime-pi/                                pi's isolated config
     ├── mcp.json                               same MCP server, for pi
@@ -283,12 +284,15 @@ You are a screener. Steps:
 ```
 
 Claude auto-discovers everything in `<runtime-claude>/agents/` because
-`CLAUDE_CONFIG_DIR` points there. Three starters are seeded by `bb install`:
+`CLAUDE_CONFIG_DIR` points there. Two starters are seeded by `bb install`:
 
-- **options-strategist** — pick a structure given outlook + IV + horizon.
 - **earnings-preview** — build a pre-print briefing for a single ticker.
 - **position-risk** — audit the book for concentration, greeks, expiry
   clustering.
+
+Strategy structuring (outlook + IV + horizon → concrete legs) is now
+covered by the **options-strategy-advisor** skill — invoke it via
+`Skill` when the user asks "how should I play X?".
 
 ### 3. Skills (`<config>/runtime-claude/skills/<name>/SKILL.md`)
 

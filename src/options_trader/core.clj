@@ -94,9 +94,15 @@
                     (io/file (paths/runtime-claude-agents-dir))
                     #(str % ".md"))
     (paths/ensure-dir! (paths/runtime-claude-skills-dir))
-    (seed-manifest! "runtime/claude/skills"
-                    (io/file (paths/runtime-claude-skills-dir))
-                    #(str % "/SKILL.md"))
+    (let [skills-dir  (io/file (paths/runtime-claude-skills-dir))
+          skill-names (seed-manifest! "runtime/claude/skills" skills-dir
+                                      #(str % "/SKILL.md"))]
+      (doseq [nm skill-names
+              :let [files-res (io/resource (str "runtime/claude/skills/" nm "/files.edn"))]
+              :when files-res
+              rel (try (read-string (slurp files-res)) (catch Throwable _ nil))]
+        (seed-from-resource! (str "runtime/claude/skills/" nm "/" rel)
+                             (io/file skills-dir nm rel))))
     (link-claude-credentials! dir)
     dir))
 

@@ -136,12 +136,18 @@
     (refresh/refresh-filings! {:ds ds :symbols symbols})))
 
 (defmethod run-subcommand :refresh-iv-daily [_ opts _]
-  (let [ds      (ds-of opts)
-        conn    (conn-of opts)
-        symbols (resolve-symbols opts ds)]
+  (let [cfg     (when-not (and (:ibkr-config opts) (:conn opts) (:ds opts))
+                  (config/load-config (:profile opts)))
+        ds      (or (:ds opts) (open-ds! cfg))
+        conn    (or (:conn opts) (open-ib! cfg))
+        symbols (resolve-symbols opts ds)
+        ibkr    (or (:ibkr-config opts) (:ibkr cfg))]
     (try
-      (refresh/refresh-iv-daily! {:conn conn :ds ds :symbols symbols})
-      (finally (when-not (:conn opts) (ibkr/disconnect!))))))
+      (refresh/refresh-iv-daily! {:conn        conn
+                                  :ds          ds
+                                  :symbols     symbols
+                                  :ibkr-config ibkr})
+      (finally (when-not (:conn opts) (try (ibkr/disconnect!) (catch Throwable _)))))))
 
 (defmethod run-subcommand :refresh-short-interest [_ opts _]
   (let [ds      (ds-of opts)
@@ -196,7 +202,7 @@
         needs-ib?     (or do-portfolio? do-daily? do-intraday? do-news? do-ivdaily?)
         run-start     (System/currentTimeMillis)
         conn          (when needs-ib? (open-ib! cfg))
-        opts'         (cond-> (assoc opts :ds ds)
+        opts'         (cond-> (assoc opts :ds ds :ibkr-config (:ibkr cfg))
                         conn (assoc :conn conn))
         results       (atom [])
         run-phase!    (fn [label subcmd]
@@ -224,10 +230,13 @@
       (when do-news?      (run-phase! :news            :refresh-news))
       (when do-fund?      (run-phase! :fundamentals    :refresh-fundamentals))
       (when do-filings?   (run-phase! :filings         :refresh-filings))
-      (when do-ivdaily?   (run-phase! :iv-daily        :refresh-iv-daily))
       (when do-short?     (run-phase! :short-interest  :refresh-short-interest))
       (when do-earnings?  (run-phase! :earnings        :refresh-earnings))
       (when do-univ?      (run-phase! :universes       :refresh-universes))
+      ;; iv-daily is gated by IB's 60-per-10-min historical window and is the
+      ;; phase most likely to need a re-run after partial failures. Keep it
+      ;; last so `refresh-iv-daily` alone covers any retry.
+      (when do-ivdaily?   (run-phase! :iv-daily        :refresh-iv-daily))
       (finally
         (when conn (try (ibkr/disconnect!) (catch Throwable _)))))
     (let [elapsed (/ (- (System/currentTimeMillis) run-start) 1000.0)]
