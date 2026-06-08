@@ -8,17 +8,11 @@
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
             [options-trader.db.duckdb :as db]
+            [options-trader.test-util :as tu]
             [options-trader.indicators.beta :as beta])
-  (:import [java.io File]
-           [java.sql Date]
+  (:import [java.sql Date]
            [java.time LocalDate]))
 
-;;; ── Temp DB fixture ──────────────────────────────────────────────────────────
-
-(defn- tempfile-cfg []
-  (let [f (File/createTempFile "beta-test-" ".duckdb")]
-    (.delete f)
-    {:db {:path (.getAbsolutePath f)}}))
 
 ;;; ── Seed helpers ─────────────────────────────────────────────────────────────
 
@@ -48,13 +42,13 @@
   (:beta_252d
    (first (jdbc/execute! ds
             [(str "SELECT beta_252d FROM latest_indicators WHERE symbol = '" sym "'")]
-            {:builder-fn rs/as-unqualified-lower-maps}))))
+            tu/as-lower))))
 
 ;;; ── Happy path: 260 paired observations, expected beta ≈ 2.0 ────────────────
 
 (deftest happy-path-260-paired-bars-test
   (testing "260 paired observations with y=2x relationship → beta_252d ≈ 2.0"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       ;; 261 bars → 260 non-NULL log returns; benchmark covers all 260 dates
@@ -75,7 +69,7 @@
 
 (deftest short-history-null-test
   (testing "249 paired observations (< 252 minimum) → beta_252d is NULL"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       (let [n            250
@@ -93,7 +87,7 @@
 
 (deftest missing-benchmark-null-test
   (testing "symbol has 261 bars but no benchmark data → no beta row / NULL"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       (let [n      261
@@ -104,7 +98,7 @@
         (beta/refresh-beta! ds "SPY")
         (let [row (first (jdbc/execute! ds
                            ["SELECT beta_252d FROM latest_indicators WHERE symbol = 'NOBENCH'"]
-                           {:builder-fn rs/as-unqualified-lower-maps}))]
+                           tu/as-lower))]
           (is (or (nil? row) (nil? (:beta_252d row)))
               "no benchmark_returns rows → beta_252d must be NULL or row absent"))))))
 
@@ -112,7 +106,7 @@
 
 (deftest idempotency-test
   (testing "two successive refresh! calls leave exactly one row per symbol"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       (let [n            261
@@ -126,7 +120,7 @@
         (beta/refresh-beta! ds "SPY")
         (let [cnt (-> (jdbc/execute! ds
                         ["SELECT COUNT(*) AS n FROM latest_indicators WHERE symbol = 'IDEM'"]
-                        {:builder-fn rs/as-unqualified-lower-maps})
+                        tu/as-lower)
                       first :n)
               v   (fetch-beta ds "IDEM")]
           (is (= 1 cnt)  "upsert must not duplicate rows on repeated calls")
@@ -136,7 +130,7 @@
 
 (deftest perfect-correlation-beta-one-test
   (testing "sym_log_ret identical to bench_ret → regr_slope = 1.0 exactly"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       (let [n          261

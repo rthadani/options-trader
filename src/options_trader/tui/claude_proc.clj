@@ -1,7 +1,8 @@
 (ns options-trader.tui.claude-proc
   (:require [cheshire.core         :as json]
             [clojure.string        :as str]
-            [options-trader.tui.proc :as proc]))
+            [options-trader.tui.proc :as proc]
+            [options-trader.util   :as util]))
 
 (def ^:private default-model "claude-opus-4-5")
 
@@ -38,9 +39,7 @@
    JSON-lines protocol are ignored."
   [stdout]
   (->> (str/split-lines (or stdout ""))
-       (keep (fn [line]
-               (try (json/parse-string line true)
-                    (catch Exception _ nil))))))
+       (keep util/safe-json-parse)))
 
 (defn extract-session-id
   "Return claude's session-id from the stream-json stdout, or nil if absent.
@@ -65,8 +64,4 @@
              :cache-read-input-tokens     (or (:cache_read_input_tokens u) 0)
              :cache-creation-input-tokens (or (:cache_creation_input_tokens u) 0)})))
 
-(defn make-process-spawn-fn
-  "Return a real spawn-fn that invokes the claude CLI via ProcessBuilder.
-   Synchronous: writes input on stdin, slurps stdout, returns {:stdout :exit}."
-  []
-  proc/one-shot!)
+

@@ -13,10 +13,6 @@
             [options-trader.screener.registry :as screener])
   (:gen-class))
 
-(defn- apply-edgar-source! [cfg]
-  (when-let [edgar-cfg (get-in cfg [:data-sources :edgar])]
-    (edgar/set-default-source! (edgar/make-source edgar-cfg))))
-
 (def ^:private cli-options
   [["-h" "--help" "Show usage"]
    ["-p" "--profile PROFILE" "Config profile" :default "dev"]
@@ -204,46 +200,45 @@
         conn          (when needs-ib? (open-ib! cfg))
         opts'         (cond-> (assoc opts :ds ds :ibkr-config (:ibkr cfg))
                         conn (assoc :conn conn))
-        results       (atom [])
         run-phase!    (fn [label subcmd]
                         (let [t0 (System/currentTimeMillis)]
                           (try
                             (let [r (run-subcommand subcmd opts' nil)]
-                              (swap! results conj {:phase label :status :ok
-                                                    :elapsed-ms (- (System/currentTimeMillis) t0)
-                                                    :result r})
-                              r)
+                              {:phase label :status :ok
+                               :elapsed-ms (- (System/currentTimeMillis) t0)
+                               :result r})
                             (catch Throwable t
                               (binding [*out* *err*]
                                 (println (format "phase %s failed: %s" label (.getMessage t))))
-                              (swap! results conj {:phase label :status :error
-                                                    :elapsed-ms (- (System/currentTimeMillis) t0)
-                                                    :error (.getMessage t)}))
+                              {:phase label :status :error
+                               :elapsed-ms (- (System/currentTimeMillis) t0)
+                               :error (.getMessage t)})
                             (finally
                               (System/gc)))))]
     (println (format "refresh-all starting (ib=%s, bars=%s, universe=%s)"
                      (boolean conn) bars-kind (or (:universe opts) (:symbols opts) "?")))
-    (try
-      (when do-portfolio? (run-phase! :portfolio       :refresh-portfolio))
-      (when do-daily?     (run-phase! :bars-daily      :refresh-daily))
-      (when do-intraday?  (run-phase! :bars-intraday   :refresh-intraday))
-      (when do-news?      (run-phase! :news            :refresh-news))
-      (when do-fund?      (run-phase! :fundamentals    :refresh-fundamentals))
-      (when do-filings?   (run-phase! :filings         :refresh-filings))
-      (when do-short?     (run-phase! :short-interest  :refresh-short-interest))
-      (when do-earnings?  (run-phase! :earnings        :refresh-earnings))
-      (when do-univ?      (run-phase! :universes       :refresh-universes))
-      ;; iv-daily is gated by IB's 60-per-10-min historical window and is the
-      ;; phase most likely to need a re-run after partial failures. Keep it
-      ;; last so `refresh-iv-daily` alone covers any retry.
-      (when do-ivdaily?   (run-phase! :iv-daily        :refresh-iv-daily))
-      (finally
-        (when conn (try (ibkr/disconnect!) (catch Throwable _)))))
-    (let [elapsed (/ (- (System/currentTimeMillis) run-start) 1000.0)]
+    (let [results (try
+                    (cond-> []
+                      do-portfolio? (conj (run-phase! :portfolio       :refresh-portfolio))
+                      do-daily?     (conj (run-phase! :bars-daily      :refresh-daily))
+                      do-intraday?  (conj (run-phase! :bars-intraday   :refresh-intraday))
+                      do-news?      (conj (run-phase! :news            :refresh-news))
+                      do-fund?      (conj (run-phase! :fundamentals    :refresh-fundamentals))
+                      do-filings?   (conj (run-phase! :filings         :refresh-filings))
+                      do-short?     (conj (run-phase! :short-interest  :refresh-short-interest))
+                      do-earnings?  (conj (run-phase! :earnings        :refresh-earnings))
+                      do-univ?      (conj (run-phase! :universes       :refresh-universes))
+                      ;; iv-daily is gated by IB's 60-per-10-min historical window and is the
+                      ;; phase most likely to need a re-run after partial failures. Keep it
+                      ;; last so `refresh-iv-daily` alone covers any retry.
+                      do-ivdaily?   (conj (run-phase! :iv-daily        :refresh-iv-daily)))
+                    (finally
+                      (when conn (try (ibkr/disconnect!) (catch Throwable _)))))
+          elapsed (/ (- (System/currentTimeMillis) run-start) 1000.0)]
       (println (format "refresh-all done in %.1fs" elapsed))
       {:subcommand :refresh-all
        :elapsed-sec elapsed
-       :phases     @results})))
+       :phases     results})))
 
 (defmethod run-subcommand :ping [_ opts _]
   (let [ds   (ds-of opts)
@@ -305,7 +300,7 @@
 (defn -main [& args]
   (let [{:keys [options]} (tools-cli/parse-opts (vec args) cli-options :in-order false)]
     (try
-      (apply-edgar-source! (config/load-config (:profile options)))
+      (edgar/apply-edgar-source! (config/load-config (:profile options)))
       (catch Throwable t
         (binding [*out* *err*]
           (println "warning: failed to apply EDGAR config —" (.getMessage t))))))

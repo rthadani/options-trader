@@ -5,17 +5,9 @@
    single-symbol sector edge case, and idempotency."
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
             [options-trader.db.duckdb :as db]
-            [options-trader.indicators.sector-metrics :as sm])
-  (:import [java.io File]))
-
-;;; ── Temp DB fixture ──────────────────────────────────────────────────────────
-
-(defn- tempfile-cfg []
-  (let [f (File/createTempFile "sm-test-" ".duckdb")]
-    (.delete f)
-    {:db {:path (.getAbsolutePath f)}}))
+            [options-trader.indicators.sector-metrics :as sm]
+            [options-trader.test-util :as tu]))
 
 ;;; ── Seed helpers ─────────────────────────────────────────────────────────────
 
@@ -34,15 +26,10 @@
   (seed-sector! ds sym sector)
   (seed-fundamentals! ds sym period pe-ratio ev-ebitda))
 
-(defn- fetch-indicator [ds sym]
-  (first (jdbc/execute! ds
-           [(str "SELECT * FROM latest_indicators WHERE symbol = '" sym "'")]
-           {:builder-fn rs/as-unqualified-lower-maps})))
-
 (defn- fetch-sector [ds sector]
   (first (jdbc/execute! ds
            ["SELECT * FROM sector_metrics WHERE sector = ? ORDER BY ts DESC LIMIT 1" sector]
-           {:builder-fn rs/as-unqualified-lower-maps})))
+           tu/as-lower)))
 
 (defn- approx= [a b]
   (< (Math/abs (- (double a) (double b))) 0.001))
@@ -62,7 +49,7 @@
     ;; Energy sector: pe=[10,11,12,13], ev=[6,7,8,9]
     ;;   quantile_cont pe: p25=10.75, p50=11.5, p75=12.25
     ;;   quantile_cont ev: p25=6.75,  p50=7.5,  p75=8.25
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       ;; Seed Tech sector
@@ -116,26 +103,26 @@
 
       (testing "Tech sector PERCENT_RANK by pe_ratio ASC"
         ;; META(18)→0.0, AAPL(20)→1/3, GOOG(22)→2/3, MSFT(25)→1.0
-        (is (approx= (:pe_vs_sector_pct (fetch-indicator ds "META")) 0.0)         "META cheapest")
-        (is (approx= (:pe_vs_sector_pct (fetch-indicator ds "AAPL")) (/ 1.0 3.0)) "AAPL 2nd")
-        (is (approx= (:pe_vs_sector_pct (fetch-indicator ds "GOOG")) (/ 2.0 3.0)) "GOOG 3rd")
-        (is (approx= (:pe_vs_sector_pct (fetch-indicator ds "MSFT")) 1.0)         "MSFT most expensive"))
+        (is (approx= (:pe_vs_sector_pct (tu/query-row ds "META")) 0.0)         "META cheapest")
+        (is (approx= (:pe_vs_sector_pct (tu/query-row ds "AAPL")) (/ 1.0 3.0)) "AAPL 2nd")
+        (is (approx= (:pe_vs_sector_pct (tu/query-row ds "GOOG")) (/ 2.0 3.0)) "GOOG 3rd")
+        (is (approx= (:pe_vs_sector_pct (tu/query-row ds "MSFT")) 1.0)         "MSFT most expensive"))
 
       (testing "Tech sector PERCENT_RANK by ev_ebitda ASC"
-        (is (approx= (:ev_ebitda_vs_sector_pct (fetch-indicator ds "META")) 0.0)         "META cheapest ev")
-        (is (approx= (:ev_ebitda_vs_sector_pct (fetch-indicator ds "AAPL")) (/ 1.0 3.0)) "AAPL 2nd ev")
-        (is (approx= (:ev_ebitda_vs_sector_pct (fetch-indicator ds "GOOG")) (/ 2.0 3.0)) "GOOG 3rd ev")
-        (is (approx= (:ev_ebitda_vs_sector_pct (fetch-indicator ds "MSFT")) 1.0)         "MSFT most expensive ev"))
+        (is (approx= (:ev_ebitda_vs_sector_pct (tu/query-row ds "META")) 0.0)         "META cheapest ev")
+        (is (approx= (:ev_ebitda_vs_sector_pct (tu/query-row ds "AAPL")) (/ 1.0 3.0)) "AAPL 2nd ev")
+        (is (approx= (:ev_ebitda_vs_sector_pct (tu/query-row ds "GOOG")) (/ 2.0 3.0)) "GOOG 3rd ev")
+        (is (approx= (:ev_ebitda_vs_sector_pct (tu/query-row ds "MSFT")) 1.0)         "MSFT most expensive ev"))
 
       (testing "Finance and Energy symbols have non-null percent_rank columns"
         (doseq [sym ["GS" "JPM" "BAC" "WFC" "XOM" "CVX" "COP" "SLB"]]
-          (let [row (fetch-indicator ds sym)]
+          (let [row (tu/query-row ds sym)]
             (is (some? (:pe_vs_sector_pct row))          (str sym " pe_vs_sector_pct"))
             (is (some? (:ev_ebitda_vs_sector_pct row))   (str sym " ev_ebitda_vs_sector_pct"))))))))
 
 (deftest missing-sector-map-test
   (testing "Symbol with fundamentals but no sector_map row → both columns NULL"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       ;; NOSEC has fundamentals but no sector_map entry
@@ -144,7 +131,7 @@
       (jdbc/execute! ds ["INSERT INTO latest_indicators (symbol) VALUES ('NOSEC')
                           ON CONFLICT (symbol) DO NOTHING"])
       (sm/refresh-sector-metrics! ds)
-      (let [row (fetch-indicator ds "NOSEC")]
+      (let [row (tu/query-row ds "NOSEC")]
         (testing "row exists in latest_indicators"
           (is (some? row)))
         (testing "pe_vs_sector_pct is NULL (no sector_map row)"
@@ -154,7 +141,7 @@
 
 (deftest missing-fundamentals-test
   (testing "Symbol with sector_map but no fundamentals row → both columns NULL"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       ;; NOFUND has sector_map but no fundamentals row
@@ -163,7 +150,7 @@
       (jdbc/execute! ds ["INSERT INTO latest_indicators (symbol) VALUES ('NOFUND')
                           ON CONFLICT (symbol) DO NOTHING"])
       (sm/refresh-sector-metrics! ds)
-      (let [row (fetch-indicator ds "NOFUND")]
+      (let [row (tu/query-row ds "NOFUND")]
         (testing "row exists in latest_indicators"
           (is (some? row)))
         (testing "pe_vs_sector_pct is NULL (no fundamentals row)"
@@ -176,7 +163,7 @@
     ;; SOLO is the only member of the 'Solo' sector.
     ;; PERCENT_RANK of a single-row partition = 0.0
     ;; quantile_cont of a single value at any quantile = that value
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       (seed-sym! ds "SOLO" "Solo" "2026Q1" 30.0 20.0)
@@ -195,14 +182,14 @@
           (is (approx= (:ev_ebitda_p75 row) 20.0) "ev_ebitda_p75")))
 
       (testing "PERCENT_RANK of the lone member = 0.0"
-        (let [row (fetch-indicator ds "SOLO")]
+        (let [row (tu/query-row ds "SOLO")]
           (is (some? row) "SOLO row must exist in latest_indicators")
           (is (approx= (:pe_vs_sector_pct row) 0.0)        "pe_vs_sector_pct = 0.0")
           (is (approx= (:ev_ebitda_vs_sector_pct row) 0.0) "ev_ebitda_vs_sector_pct = 0.0"))))))
 
 (deftest idempotency-test
   (testing "Two calls with same data produce identical sector_metrics rows for same ts"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       (seed-sym! ds "IDEM1" "IdSector" "2026Q1" 10.0 5.0)
@@ -214,7 +201,7 @@
       (testing "exactly one sector_metrics row for IdSector"
         (let [cnt (-> (jdbc/execute! ds
                         ["SELECT COUNT(*) AS n FROM sector_metrics WHERE sector = 'IdSector'"]
-                        {:builder-fn rs/as-unqualified-lower-maps})
+                        tu/as-lower)
                       first :n)]
           (is (= 1 cnt) "upsert must not duplicate sector rows")))
 
@@ -222,7 +209,7 @@
         (doseq [sym ["IDEM1" "IDEM2" "IDEM3"]]
           (let [cnt (-> (jdbc/execute! ds
                           [(str "SELECT COUNT(*) AS n FROM latest_indicators WHERE symbol = '" sym "'")]
-                          {:builder-fn rs/as-unqualified-lower-maps})
+                          tu/as-lower)
                         first :n)]
             (is (= 1 cnt) (str sym " must not be duplicated")))))
 
@@ -235,6 +222,6 @@
 
       (testing "latest_indicators columns are stable after two calls"
         (doseq [sym ["IDEM1" "IDEM2" "IDEM3"]]
-          (let [row (fetch-indicator ds sym)]
+          (let [row (tu/query-row ds sym)]
             (is (some? (:pe_vs_sector_pct row))        (str sym " pe_vs_sector_pct"))
             (is (some? (:ev_ebitda_vs_sector_pct row)) (str sym " ev_ebitda_vs_sector_pct"))))))))

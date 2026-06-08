@@ -1,26 +1,20 @@
 (ns options-trader.db.refresh-test
   (:require [clojure.test            :refer [deftest is testing use-fixtures]]
             [next.jdbc               :as jdbc]
-            [next.jdbc.result-set    :as rs]
             [options-trader.db.duckdb  :as duckdb]
+            [options-trader.test-util    :as tu]
             [options-trader.db.refresh :as refresh]
+            [options-trader.util         :refer [as-lower]]
             [options-trader.data.ibkr  :as ibkr])
   (:import [java.time LocalDate]
            [java.sql Timestamp]))
 
 (def ^:dynamic *ds* nil)
 
-(def ^:private as-lower {:builder-fn rs/as-unqualified-lower-maps})
-
-(defn- tempfile-cfg []
-  (let [f (java.io.File/createTempFile "refresh-test-" ".duckdb")
-        path (.getAbsolutePath f)]
-    (.delete f)
-    {:db {:path path} :_file f}))
 
 (use-fixtures :each
   (fn [f]
-    (let [cfg (tempfile-cfg)]
+    (let [cfg (tu/tempfile-cfg)]
       (duckdb/bootstrap! cfg)
       (binding [*ds* (duckdb/datasource cfg)]
         (try (f)

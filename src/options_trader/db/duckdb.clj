@@ -30,6 +30,8 @@
   "Default path for the DuckDB database file."
   "cache/options_trader.duckdb")
 
+(def as-lower {:builder-fn rs/as-unqualified-lower-maps})
+
 ;;; ── Internal helpers ─────────────────────────────────────────────────────────
 
 (defn- jdbc-url [{:keys [db]}]
@@ -73,7 +75,7 @@
   [ds]
   (->> (jdbc/execute! ds
          ["SELECT version FROM _schema_migrations ORDER BY version"]
-         {:builder-fn rs/as-unqualified-lower-maps})
+         as-lower)
        (map :version)
        set))
 

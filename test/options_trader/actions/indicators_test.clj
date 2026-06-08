@@ -1,15 +1,13 @@
 (ns options-trader.actions.indicators-test
   (:require [clojure.test :refer [deftest is testing]]
             [options-trader.actions.core :as actions]
-            [options-trader.actions.indicators :as ind]))
-
-(defn- canned-sh [stdout]
-  (fn [& _args] {:exit 0 :out stdout :err ""}))
+            [options-trader.actions.indicators :as ind]
+            [options-trader.test-util :as tu]))
 
 (deftest propose-spec-parses-llm-json
   (let [res (ind/propose-spec
               "sortino_ratio"
-              {:sh-fn (canned-sh
+              {:sh-fn (tu/canned-sh
                         "{\"kind\":\"RSI\",\"params\":[14],\"column\":\"sortino_ratio\",\"rationale\":\"sample\"}")})]
     (is (= :RSI (get-in res [:proposal :kind])))
     (is (= [14] (get-in res [:proposal :params])))
@@ -18,7 +16,7 @@
 (deftest propose-spec-unsupported-passes-through
   (let [res (ind/propose-spec
               "voodoo_index"
-              {:sh-fn (canned-sh
+              {:sh-fn (tu/canned-sh
                         "{\"unsupported\":true,\"reason\":\"no ta4j class\"}")})]
     (is (true? (:unsupported res)))
     (is (string? (:reason res)))))

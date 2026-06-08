@@ -4,32 +4,12 @@
    latest_indicators.  Called at the top of engine/refresh-derived-indicators! so
    persistent ta4j columns are populated before any SQL-only slice can COALESCE
    against them."
-  (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
-            [options-trader.db.queries.indicators :as q]
+  (:require [options-trader.db.queries.indicators :as q]
             [options-trader.indicators.ta4j :as ta4j]
-            [taoensso.timbre :as log])
-  (:import [java.time ZoneOffset]))
+            [options-trader.util :as util]
+            [taoensso.timbre :as log]))
 
 ;;; ── Bar loading ─────────────────────────────────────────────────────────────
-
-(defn- local-date->epoch-ms [d]
-  (-> d (.atStartOfDay ZoneOffset/UTC) .toInstant .toEpochMilli))
-
-(defn- load-bars
-  "Load OHLCV rows for sym from bars_daily, sorted ascending by bar_date."
-  [ds sym]
-  (mapv (fn [r]
-          {:bar_date (:bar_date r)
-           :time     (local-date->epoch-ms (:bar_date r))
-           :open     (double (or (:open r) 0.0))
-           :high     (double (or (:high r) 0.0))
-           :low      (double (or (:low r) 0.0))
-           :close    (double (or (:close r) 0.0))
-           :volume   (long   (or (:volume r) 0))})
-        (q/load-bars-daily ds sym)))
-
-(defn- all-symbols [ds] (q/all-bars-daily-symbols ds))
 
 ;;; ── Indicator computation ───────────────────────────────────────────────────
 
@@ -61,15 +41,17 @@
 
 ;;; ── Schema management ───────────────────────────────────────────────────────
 
+(defn- load-config []
+  (util/read-edn-resource "indicators.edn"))
+
 (defn ensure-schema!
   "Idempotently add a DOUBLE column to latest_indicators for every indicator
    declared in resources/indicators.edn.  Safe to call multiple times."
   [ds]
-  (let [cfg (edn/read-string (slurp (io/resource "indicators.edn")))]
+  (let [cfg (load-config)]
     (q/ensure-double-columns! ds (mapv :column (:indicators cfg)))))
 
-(defn- upsert-row! [ds sym values]
-  (q/upsert-latest-row! ds sym values))
+
 
 ;;; ── Public API ──────────────────────────────────────────────────────────────
 
@@ -78,7 +60,7 @@
    when the symbol has no bars. Safe to run concurrently — only does DuckDB
    reads (which are MVCC-safe) and CPU-bound ta4j work."
   [ds specs sym]
-  (let [bars (load-bars ds sym)]
+  (let [bars (ta4j/load-bars ds sym)]
     (when (pos? (count bars))
       (let [series (ta4j/ds->ta4j-ohlcv bars)
             values (into {}
@@ -107,27 +89,25 @@
    Row skipped entirely when no value is computable, so NULLs aren't written."
   [ds]
   (ensure-schema! ds)
-  (let [cfg    (edn/read-string (slurp (io/resource "indicators.edn")))
+  (let [cfg    (load-config)
         specs  (:indicators cfg)
-        syms   (all-symbols ds)
+        syms   (q/all-bars-daily-symbols ds)
         total  (count syms)
         step   (max 1 (long (/ total 10)))
         t0     (System/currentTimeMillis)
-        done   (atom 0)
         log-progress!
-        (fn [sym]
-          (let [n (swap! done inc)]
-            (when (or (zero? (mod n step)) (= n total))
-              (let [dt (/ (- (System/currentTimeMillis) t0) 1000.0)
-                    pct (long (* 100.0 (/ n (double total))))]
-                (log/infof "runner: %d/%d symbols (%d%%) in %.1fs — last %s"
-                           n total pct dt sym)))))]
+        (fn [n sym]
+          (when (or (zero? (mod n step)) (= n total))
+            (let [dt (/ (- (System/currentTimeMillis) t0) 1000.0)
+                  pct (long (* 100.0 (/ n (double total))))]
+              (log/infof "runner: %d/%d symbols (%d%%) in %.1fs — last %s"
+                         n total pct dt sym))))]
     (log/infof "runner: computing %d indicators across %d symbols (parallel)"
                (count specs) total)
-    (doseq [result (pmap #(compute-symbol-values ds specs %) syms)]
+    (doseq [[i result] (map-indexed vector (pmap #(compute-symbol-values ds specs %) syms))]
       (when result
         (let [[sym values] result]
-          (upsert-row! ds sym values)
-          (log-progress! sym))))
+          (q/upsert-latest-row! ds sym values)
+          (log-progress! (inc i) sym))))
     (log/infof "runner: done — %d symbols in %.1fs"
                total (/ (- (System/currentTimeMillis) t0) 1000.0))))

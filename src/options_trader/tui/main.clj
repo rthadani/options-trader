@@ -25,6 +25,7 @@
             [options-trader.tui.render :as render-ui]
             [options-trader.tui.slash :as opts-slash]
             [options-trader.tui.state :as st]
+            [options-trader.util :as util]
             [options-trader.indicators.engine :as indicators]
             [options-trader.screener.registry :as screener]
             [taoensso.timbre :as log]
@@ -82,7 +83,7 @@
                          :account-id      account-id})))
 
 (defn parse-event [line]
-  (try (json/parse-string line true) (catch Exception _ nil)))
+  (util/safe-json-parse line))
 
 (defn text-blocks [content]
   (->> content (filter #(= "text" (:type %))) (map :text)))

@@ -464,31 +464,34 @@
   (keyword (str (name prefix) "-" (name suffix-kw))))
 
 (defn- handle-tick-price [acc {:keys [field price]}]
-  (when-let [k (get tick-field->key field)]
-    (when (and (number? price) (not= -1.0 price))
-      (swap! acc assoc k price))))
+  (if-let [k (get tick-field->key field)]
+    (if (and (number? price) (not= -1.0 price))
+      (assoc acc k price)
+      acc)
+    acc))
 
 (defn- handle-tick-size [acc {:keys [field size]}]
-  (when-let [k (get tick-field->key field)]
-    (swap! acc assoc k (->double size))))
+  (if-let [k (get tick-field->key field)]
+    (assoc acc k (->double size))
+    acc))
 
 (defn- handle-tick-opt-comp [acc {:keys [field implied-vol delta gamma theta vega
                                           opt-price und-price pv-dividend]}]
-  (when-let [pfx (get opt-comp-prefix field)]
-    (swap! acc assoc
-           (->greek-kw pfx :iv)    implied-vol
-           (->greek-kw pfx :delta) delta
-           (->greek-kw pfx :gamma) gamma
-           (->greek-kw pfx :theta) theta
-           (->greek-kw pfx :vega)  vega
-           (->greek-kw pfx :opt-price) opt-price)
-    (swap! acc (fn [m]
-                 (cond-> m
-                   und-price   (assoc :underlying-price und-price)
-                   pv-dividend (assoc :pv-dividend      pv-dividend))))))
+  (if-let [pfx (get opt-comp-prefix field)]
+    (let [acc' (-> acc
+                   (assoc (->greek-kw pfx :iv)    implied-vol
+                          (->greek-kw pfx :delta) delta
+                          (->greek-kw pfx :gamma) gamma
+                          (->greek-kw pfx :theta) theta
+                          (->greek-kw pfx :vega)  vega
+                          (->greek-kw pfx :opt-price) opt-price))]
+      (cond-> acc'
+        und-price   (assoc :underlying-price und-price)
+        pv-dividend (assoc :pv-dividend      pv-dividend)))
+    acc))
 
 (defn- handle-market-data-type [acc {:keys [market-data-type]}]
-  (swap! acc assoc :data-mode
+  (assoc acc :data-mode
          (get market-data-type-codes market-data-type :unknown)))
 
 (defn- handle-tick-string
@@ -500,15 +503,14 @@
     48 (let [parts (str/split (str value) #";")
              [last-px _last-sz _t total-vol vwap _flag] parts
              num   #(try (Double/parseDouble %) (catch Throwable _ nil))]
-         (swap! acc (fn [m]
-                      (cond-> m
-                        (some-> last-px num)   (assoc :rt-last   (num last-px))
-                        (some-> total-vol num) (assoc :rt-volume (num total-vol))
-                        (some-> vwap num)      (assoc :vwap      (num vwap))))))
-    nil))
+         (cond-> acc
+           (some-> last-px num)   (assoc :rt-last   (num last-px))
+           (some-> total-vol num) (assoc :rt-volume (num total-vol))
+           (some-> vwap num)      (assoc :vwap      (num vwap))))
+    acc))
 
 (defn- handle-warning [acc {:keys [code message]}]
-  (swap! acc update :warnings conj {:code code :message message}))
+  (update acc :warnings conj {:code code :message message}))
 
 (defn- handle-error
   "Hard errors land as one-element event vectors when TWS rejects the
@@ -516,7 +518,7 @@
    :errors so the caller sees WHY the snapshot is empty instead of just
    getting back a blank map of nils."
   [acc {:keys [code message]}]
-  (swap! acc update :errors (fnil conj []) {:code code :message message}))
+  (update acc :errors (fnil conj []) {:code code :message message}))
 
 (def ^:private snapshot-event-handlers
   {:tick-price              handle-tick-price
@@ -534,17 +536,18 @@
    stripped. Option greeks land under :model-{iv,delta,gamma,theta,vega}
    and are also promoted to bare :iv/:delta/... for convenience."
   [events]
-  (let [acc (atom {:warnings []})]
-    (doseq [e events]
-      (when-let [handler (get snapshot-event-handlers (:type e))]
-        (handler acc e)))
-    (let [m @acc]
-      (cond-> m
-        (:model-iv m)    (assoc :iv    (:model-iv m))
-        (:model-delta m) (assoc :delta (:model-delta m))
-        (:model-gamma m) (assoc :gamma (:model-gamma m))
-        (:model-theta m) (assoc :theta (:model-theta m))
-        (:model-vega m)  (assoc :vega  (:model-vega m))))))
+  (let [m (reduce (fn [acc e]
+                    (if-let [handler (get snapshot-event-handlers (:type e))]
+                      (handler acc e)
+                      acc))
+                  {:warnings []}
+                  events)]
+    (cond-> m
+      (:model-iv m)    (assoc :iv    (:model-iv m))
+      (:model-delta m) (assoc :delta (:model-delta m))
+      (:model-gamma m) (assoc :gamma (:model-gamma m))
+      (:model-theta m) (assoc :theta (:model-theta m))
+      (:model-vega m)  (assoc :vega  (:model-vega m)))))
 
 ;; MUST be sequences (vectors of ints), NOT comma-separated strings —
 ;; ib-re-actor's `:to-ib :tick-list` translation does `(map ... val)` which

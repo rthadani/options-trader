@@ -4,7 +4,8 @@
             [clojure.string :as str]
             [next.jdbc :as jdbc]
             [options-trader.paths              :as paths]
-            [options-trader.screener.registry  :as registry]))
+            [options-trader.screener.registry  :as registry]
+            [options-trader.test-util          :as tu]))
 
 (defn- isolate-screens-dir
   "Per-test fixture: redirect paths/config-root (and therefore screens-dir)
@@ -129,12 +130,9 @@
       (registry/delete-screen! ds "test-delete")
       (is (nil? (registry/get-screen ds "test-delete"))))))
 
-(defn- canned-sh [stdout]
-  (fn [& _args] {:exit 0 :out stdout :err ""}))
-
 (deftest description-driven-screen-generates-and-caches-sql
   (let [ds   (make-test-ds)
-        opts {:sh-fn (canned-sh "SELECT symbol FROM latest_indicators WHERE rsi_14 < 30")}
+        opts {:sh-fn (tu/canned-sh "SELECT symbol FROM latest_indicators WHERE rsi_14 < 30")}
         id   (registry/save-screen! ds
                {:name "Oversold NL"
                 :description "stocks with RSI under 30"})]
@@ -160,7 +158,7 @@
              {:name "Changes"
               :description "first description"})
         _  (registry/run-screen ds "Changes"
-             {:sh-fn (canned-sh "SELECT symbol FROM latest_indicators LIMIT 1")})]
+             {:sh-fn (tu/canned-sh "SELECT symbol FROM latest_indicators LIMIT 1")})]
     (testing "saving with a new description clears the cache"
       (registry/save-screen! ds
         {:name "Changes"
@@ -174,7 +172,7 @@
              {:name "Needs Sortino"
               :description "Stocks with positive sortino"})
         r  (registry/run-screen ds "Needs Sortino"
-             {:sh-fn (canned-sh "MISSING sortino")})]
+             {:sh-fn (tu/canned-sh "MISSING sortino")})]
     (is (= "sortino" (:missing r)))
     (is (empty? (:results r)))))
 
@@ -195,7 +193,7 @@
              {:name "Plain NL"
               :description "find oversold names"})
         r  (registry/run-screen ds "Plain NL"
-             {:sh-fn (canned-sh "SELECT symbol FROM latest_indicators WHERE rsi_14 < 50")})]
+             {:sh-fn (tu/canned-sh "SELECT symbol FROM latest_indicators WHERE rsi_14 < 50")})]
     (is (nil? (:error r)))
     (is (some? (:results r)))))
 

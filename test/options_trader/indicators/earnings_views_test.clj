@@ -5,21 +5,11 @@
    and idempotency."
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
             [options-trader.db.duckdb :as db]
-            [options-trader.indicators.earnings-views :as ev])
-  (:import [java.io File]
-           [java.sql Date]
+            [options-trader.indicators.earnings-views :as ev]
+            [options-trader.test-util :as tu])
+  (:import [java.sql Date]
            [java.time LocalDate]))
-
-;;; ── Temp DB fixture ──────────────────────────────────────────────────────────
-
-(defn- tempfile-cfg []
-  (let [f (File/createTempFile "ev-test-" ".duckdb")]
-    (.delete f)
-    {:db {:path (.getAbsolutePath f)}}))
-
-;;; ── Seed helpers ─────────────────────────────────────────────────────────────
 
 (defn- seed-event!
   [ds sym period ^LocalDate reported-at
@@ -49,13 +39,6 @@
     ["INSERT INTO earnings_calendar (symbol, report_date) VALUES (?, ?)"
      sym (Date/valueOf report-date)]))
 
-(defn- fetch-row [ds sym]
-  (first (jdbc/execute! ds
-           [(str "SELECT * FROM latest_indicators WHERE symbol = '" sym "'")]
-           {:builder-fn rs/as-unqualified-lower-maps})))
-
-(defn- approx= [a b]
-  (< (Math/abs (- (double a) (double b))) 0.001))
 
 ;;; ── Happy path ───────────────────────────────────────────────────────────────
 
@@ -72,7 +55,7 @@
     ;;   revenue_surprise_pct: (5500-5000)/5000*100 = 10.0
     ;;   gross_margin_delta_qoq: 0.45-0.40 = 0.05
     ;;   operating_margin_delta_qoq: 0.20-0.18 = 0.02
-    (let [cfg      (tempfile-cfg)
+    (let [cfg      (tu/tempfile-cfg)
           _        (db/bootstrap! cfg)
           ds       (db/datasource cfg)
           _        (ev/refresh-earnings-views! ds)   ; schema only
@@ -111,15 +94,15 @@
       ;; Future calendar event (always in the future)
       (seed-calendar! ds "HAPPY" (LocalDate/of 2099 1 1))
       (ev/refresh-earnings-views! ds)
-      (let [row (fetch-row ds "HAPPY")]
+      (let [row (tu/query-row ds "HAPPY")]
         (testing "row exists"
           (is (some? row)))
         (testing "avg_earnings_move_pct ≈ 0.045"
           (is (some? (:avg_earnings_move_pct row)))
-          (is (approx= (:avg_earnings_move_pct row) 0.045)))
+          (is (tu/approx= (:avg_earnings_move_pct row) 0.045)))
         (testing "earnings_move_count_above_implied = 5.0"
           (is (some? (:earnings_move_count_above_implied row)))
-          (is (approx= (:earnings_move_count_above_implied row) 5.0)))
+          (is (tu/approx= (:earnings_move_count_above_implied row) 5.0)))
         (testing "days_since_earnings > 0 (event in the past)"
           (is (some? (:days_since_earnings row)))
           (is (pos? (:days_since_earnings row))))
@@ -130,21 +113,21 @@
           (is (true? (:gap_held_flag row))))
         (testing "earnings_day_volume_ratio ≈ 2.0"
           (is (some? (:earnings_day_volume_ratio row)))
-          (is (approx= (:earnings_day_volume_ratio row) 2.0)))
+          (is (tu/approx= (:earnings_day_volume_ratio row) 2.0)))
         (testing "eps_surprise_pct ≈ 20.0"
           (is (some? (:eps_surprise_pct row)))
-          (is (approx= (:eps_surprise_pct row) 20.0)))
+          (is (tu/approx= (:eps_surprise_pct row) 20.0)))
         (testing "revenue_surprise_pct ≈ 10.0"
           (is (some? (:revenue_surprise_pct row)))
-          (is (approx= (:revenue_surprise_pct row) 10.0)))
+          (is (tu/approx= (:revenue_surprise_pct row) 10.0)))
         (testing "guidance_direction = raised"
           (is (= "raised" (:guidance_direction row))))
         (testing "gross_margin_delta_qoq ≈ 0.05 (0.45 - 0.40)"
           (is (some? (:gross_margin_delta_qoq row)))
-          (is (approx= (:gross_margin_delta_qoq row) 0.05)))
+          (is (tu/approx= (:gross_margin_delta_qoq row) 0.05)))
         (testing "operating_margin_delta_qoq ≈ 0.02 (0.20 - 0.18)"
           (is (some? (:operating_margin_delta_qoq row)))
-          (is (approx= (:operating_margin_delta_qoq row) 0.02)))))))
+          (is (tu/approx= (:operating_margin_delta_qoq row) 0.02)))))))
 
 ;;; ── Partial history ──────────────────────────────────────────────────────────
 
@@ -152,7 +135,7 @@
   (testing "<8 events still computes avg_earnings_move_pct"
     ;; 4 events, all realized=0.05 (close_after=105), implied=0.04 → all count
     ;; avg = 0.05, count = 4.0
-    (let [cfg  (tempfile-cfg)
+    (let [cfg  (tu/tempfile-cfg)
           _    (db/bootstrap! cfg)
           ds   (db/datasource cfg)
           _    (ev/refresh-earnings-views! ds)
@@ -163,21 +146,21 @@
           (seed-bar! ds "PART" (.minusDays d 1) 99.0 100.0 1000000)
           (seed-bar! ds "PART" (.plusDays  d 1) 102.0 105.0 1000000)))
       (ev/refresh-earnings-views! ds)
-      (let [row (fetch-row ds "PART")]
+      (let [row (tu/query-row ds "PART")]
         (testing "row exists"
           (is (some? row)))
         (testing "avg_earnings_move_pct ≈ 0.05 (4 events, all realized=0.05)"
           (is (some? (:avg_earnings_move_pct row)))
-          (is (approx= (:avg_earnings_move_pct row) 0.05)))
+          (is (tu/approx= (:avg_earnings_move_pct row) 0.05)))
         (testing "earnings_move_count_above_implied = 4.0 (all 4 above 0.04)"
           (is (some? (:earnings_move_count_above_implied row)))
-          (is (approx= (:earnings_move_count_above_implied row) 4.0)))))))
+          (is (tu/approx= (:earnings_move_count_above_implied row) 4.0)))))))
 
 ;;; ── No earnings events ───────────────────────────────────────────────────────
 
 (deftest no-events-test
   (testing "symbol with no earnings_events row → all derived columns NULL"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       ;; Ensure schema exists, then pre-seed the symbol
@@ -185,7 +168,7 @@
       (jdbc/execute! ds
         ["INSERT INTO latest_indicators (symbol) VALUES ('NOEV') ON CONFLICT (symbol) DO NOTHING"])
       (ev/refresh-earnings-views! ds)
-      (let [row (fetch-row ds "NOEV")]
+      (let [row (tu/query-row ds "NOEV")]
         (testing "row exists in latest_indicators"
           (is (some? row)))
         (testing "avg_earnings_move_pct is NULL"
@@ -205,7 +188,7 @@
 
 (deftest no-calendar-test
   (testing "earnings events exist but no earnings_calendar row → days_to_next NULL, days_since non-NULL"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)
           _   (ev/refresh-earnings-views! ds)
@@ -215,7 +198,7 @@
       (seed-bar! ds "NOCAL" (.plusDays  d 1) 102.0 101.0 1000000)
       ;; No earnings_calendar row seeded
       (ev/refresh-earnings-views! ds)
-      (let [row (fetch-row ds "NOCAL")]
+      (let [row (tu/query-row ds "NOCAL")]
         (testing "row exists"
           (is (some? row)))
         (testing "days_since_earnings is non-NULL and positive (past event)"
@@ -228,7 +211,7 @@
 
 (deftest gap-held-flag-test
   (testing "gap_held_flag: true when close_after > open_after, false otherwise"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)
           _   (ev/refresh-earnings-views! ds)
@@ -243,15 +226,15 @@
       (seed-bar! ds "GNHLD" (.plusDays  d 1) 106.0 102.0 1000000)
       (ev/refresh-earnings-views! ds)
       (testing "gap held → gap_held_flag = true"
-        (is (true? (:gap_held_flag (fetch-row ds "GHELD")))))
+        (is (true? (:gap_held_flag (tu/query-row ds "GHELD")))))
       (testing "gap NOT held → gap_held_flag = false"
-        (is (false? (:gap_held_flag (fetch-row ds "GNHLD"))))))))
+        (is (false? (:gap_held_flag (tu/query-row ds "GNHLD"))))))))
 
 ;;; ── Idempotency ──────────────────────────────────────────────────────────────
 
 (deftest idempotency-test
   (testing "two refresh calls with same data produce identical rows (no duplicates)"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)
           _   (ev/refresh-earnings-views! ds)
@@ -265,10 +248,10 @@
       (testing "exactly one latest_indicators row for IDEM"
         (let [cnt (-> (jdbc/execute! ds
                         ["SELECT COUNT(*) AS n FROM latest_indicators WHERE symbol = 'IDEM'"]
-                        {:builder-fn rs/as-unqualified-lower-maps})
+                        tu/as-lower)
                       first :n)]
           (is (= 1 cnt) "upsert must not duplicate rows")))
       (testing "avg_earnings_move_pct persists after second call"
-        (is (some? (:avg_earnings_move_pct (fetch-row ds "IDEM")))))
+        (is (some? (:avg_earnings_move_pct (tu/query-row ds "IDEM")))))
       (testing "days_to_next_earnings persists after second call"
-        (is (some? (:days_to_next_earnings (fetch-row ds "IDEM"))))))))
+        (is (some? (:days_to_next_earnings (tu/query-row ds "IDEM"))))))))

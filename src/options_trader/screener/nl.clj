@@ -3,7 +3,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
+            [options-trader.util :refer [as-lower]]
             [options-trader.indicators.engine :as engine]
             [options-trader.tui.llm :as llm]))
 
@@ -26,8 +26,7 @@
   "Returns a string describing the columns available on latest_indicators,
    annotated with each indicator's kind + params where known."
   [ds]
-  (let [cols     (jdbc/execute! ds ["PRAGMA table_info('latest_indicators')"]
-                                {:builder-fn rs/as-unqualified-lower-maps})
+  (let [cols     (jdbc/execute! ds ["PRAGMA table_info('latest_indicators')"] as-lower)
         meanings (indicator-meanings)
         lines    (for [{:keys [name type]} cols
                        :let [m (get meanings name)]]

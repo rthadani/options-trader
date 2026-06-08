@@ -3,10 +3,9 @@
    Source SQL: resources/sql/indicators.sql (event-flags). M&A keywords
    come from resources/event-flags.edn and are passed into the query as
    a vector of LIKE patterns."
-  (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
-            [clojure.string :as str]
-            [options-trader.db.queries.indicators :as q]))
+  (:require [clojure.string :as str]
+            [options-trader.db.queries.indicators :as q]
+            [options-trader.util :as util]))
 
 (defn ensure-schema! [ds]
   (doseq [col [:ma_rumor_flag :activist_filing_flag :fda_event_flag]]
@@ -17,7 +16,7 @@
    single-element tuple so hugsql's :tuple* can spread them into the
    VALUES list as (?), (?), …"
   []
-  (let [cfg (edn/read-string (slurp (io/resource "event-flags.edn")))]
+  (let [cfg (util/read-edn-resource "event-flags.edn")]
     (mapv (fn [k] [(str "%" (str/lower-case k) "%")]) (:ma-keywords cfg))))
 
 (defn refresh-event-flags!

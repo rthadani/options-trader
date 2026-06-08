@@ -1,11 +1,9 @@
 (ns options-trader.screener.sentiment
-  (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
-            [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [options-trader.util :as util]))
 
 (def ^:private lexicon
-  (delay
-    (edn/read-string (slurp (io/resource "sentiment-lexicon.edn")))))
+  (delay (util/read-edn-resource "sentiment-lexicon.edn")))
 
 (defn score-text
   "VADER-style sentiment score. Returns double in [-1.0, 1.0] or nil for blank input."

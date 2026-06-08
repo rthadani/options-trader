@@ -1,7 +1,8 @@
 (ns options-trader.indicators.ta4j
   "ta4j wrapper providing indicator construction and value extraction.
    Uses direct Java interop against ta4j-core 0.16."
-  (:require [clojure.string :as str])
+  (:require [clojure.string :as str]
+            [options-trader.db.queries.indicators :as q])
   (:import [org.ta4j.core BaseBarSeries BarSeries Bar]
            [org.ta4j.core.num Num DecimalNum DoubleNum]
            [org.ta4j.core.indicators RSIIndicator SMAIndicator EMAIndicator
@@ -29,7 +30,7 @@
             StandardReversalIndicator FibonacciReversalIndicator
             PivotLevel TimeLevel]
            [org.ta4j.core.indicators.pivotpoints FibonacciReversalIndicator$FibReversalTyp]
-           [java.time ZonedDateTime ZoneId Duration Instant]))
+           [java.time ZonedDateTime ZoneId Duration Instant ZoneOffset]))
 
 ;;; ── Num factories ──────────────────────────────────────────────────────────
 
@@ -92,6 +93,23 @@
                (or (:close r) (:c r) 0)
                (or (:volume r) (:v r) 0)))
     series))
+
+(defn local-date->epoch-ms
+  [d]
+  (-> d (.atStartOfDay ZoneOffset/UTC) .toInstant .toEpochMilli))
+
+(defn load-bars
+  "Load OHLCV rows for sym from bars_daily, sorted ascending by bar_date."
+  [ds sym]
+  (mapv (fn [r]
+          {:bar_date (:bar_date r)
+           :time     (local-date->epoch-ms (:bar_date r))
+           :open     (double (or (:open r) 0.0))
+           :high     (double (or (:high r) 0.0))
+           :low      (double (or (:low r) 0.0))
+           :close    (double (or (:close r) 0.0))
+           :volume   (long   (or (:volume r) 0))})
+        (q/load-bars-daily ds sym)))
 
 ;;; ── Indicator constructors ──────────────────────────────────────────────────
 

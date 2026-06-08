@@ -6,9 +6,8 @@
      ATR[14]  =   3.0000  (TR constant = H-L = 3.0 every bar)
      BBW[20,2]= 16.5341  (4*sqrt(33.25)/139.5 * 100 = 16.5341... per ta4j 0.16)"
   (:require [clojure.test :refer [deftest is testing]]
-            [clojure.edn :as edn]
-            [clojure.java.io :as io]
-            [options-trader.indicators.ta4j :as ta4j])
+            [options-trader.indicators.ta4j :as ta4j]
+            [options-trader.test-util :as tu])
   (:import [java.time LocalDate ZoneOffset]))
 
 ;;; ── Fixture loading ──────────────────────────────────────────────────────────
@@ -29,16 +28,8 @@
            :volume (long (:volume b))})
         bars))
 
-(def ^:private raw-fixture
-  (edn/read-string (slurp (io/resource "fixtures/ohlcv-50.edn"))))
-
 (def ^:private test-series
-  (ta4j/ds->ta4j-ohlcv (fixture->ohlcv raw-fixture)))
-
-;;; ── Rounding helper ──────────────────────────────────────────────────────────
-
-(defn- round4 [x]
-  (Double/parseDouble (format "%.4f" x)))
+  (ta4j/ds->ta4j-ohlcv (fixture->ohlcv tu/raw-bars)))
 
 ;;; ── RSI[14] ──────────────────────────────────────────────────────────────────
 
@@ -47,7 +38,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/rsi test-series 14)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 100.0)
+      (is (= (tu/round4 v) 100.0)
           (str "RSI[14] expected 100.0000, got " v)))))
 
 ;;; ── ATR[14] ──────────────────────────────────────────────────────────────────
@@ -57,7 +48,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/atr test-series 14)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 3.0)
+      (is (= (tu/round4 v) 3.0)
           (str "ATR[14] expected 3.0000, got " v)))))
 
 ;;; ── BollingerBandWidth[20, 2.0] ──────────────────────────────────────────────
@@ -67,7 +58,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/bollinger-band-width test-series 20 2.0)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 16.5341)
+      (is (= (tu/round4 v) 16.5341)
           (str "BollingerBandWidth[20,2.0] expected 16.5341, got " v)))))
 
 ;;; ── SMA[50] ──────────────────────────────────────────────────────────────────
@@ -77,7 +68,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/sma test-series 50)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 124.5)
+      (is (= (tu/round4 v) 124.5)
           (str "SMA[50] expected 124.5, got " v)))))
 
 ;;; ── SMA[200] ─────────────────────────────────────────────────────────────────
@@ -87,7 +78,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/sma test-series 200)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 124.5)
+      (is (= (tu/round4 v) 124.5)
           (str "SMA[200] on 50 bars expected 124.5, got " v)))))
 
 ;;; ── EMA[50] ──────────────────────────────────────────────────────────────────
@@ -128,7 +119,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/stoch-k test-series 14)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 90.625)
+      (is (= (tu/round4 v) 90.625)
           (str "StochK[14] expected 90.625, got " v)))))
 
 ;;; ── WilliamsR[14] ────────────────────────────────────────────────────────────
@@ -140,7 +131,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/williams-r test-series 14)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) -9.375)
+      (is (= (tu/round4 v) -9.375)
           (str "WilliamsR[14] expected -9.375, got " v)))))
 
 ;;; ── CCI[20] ──────────────────────────────────────────────────────────────────
@@ -152,7 +143,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/cci test-series 20)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 126.6667)
+      (is (= (tu/round4 v) 126.6667)
           (str "CCI[20] expected 126.6667, got " v)))))
 
 ;;; ── MACD[12,26] ──────────────────────────────────────────────────────────────
@@ -194,7 +185,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/stddev test-series 20)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 5.7663)
+      (is (= (tu/round4 v) 5.7663)
           (str "StdDev[20] expected 5.7663, got " v)))))
 
 ;;; ── UlcerIndex[14] ───────────────────────────────────────────────────────────
@@ -206,7 +197,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/ulcer-index test-series 14)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 0.0)
+      (is (= (tu/round4 v) 0.0)
           (str "UlcerIndex[14] expected 0.0, got " v)))))
 
 ;;; ── MassIndex[9,25] ──────────────────────────────────────────────────────────
@@ -220,7 +211,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/mass-index test-series 9 25)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 25.0)
+      (is (= (tu/round4 v) 25.0)
           (str "MassIndex[9,25] expected 25.0, got " v)))))
 
 ;;; ── ChaikinMoneyFlow[20] ─────────────────────────────────────────────────────
@@ -233,7 +224,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/cmf test-series 20)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 0.0)
+      (is (= (tu/round4 v) 0.0)
           (str "CMF[20] expected 0.0, got " v)))))
 
 ;;; ── BollingerBandsUpper/Lower[20,2.0] ───────────────────────────────────────
@@ -246,7 +237,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/bollinger-upper test-series 20 2.0)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 151.0326)
+      (is (= (tu/round4 v) 151.0326)
           (str "BBUpper expected 151.0326, got " v)))))
 
 (deftest bb-lower-20-2-test
@@ -254,7 +245,7 @@
     (let [n   (ta4j/bar-count test-series)
           ind (ta4j/bollinger-lower test-series 20 2.0)
           v   (ta4j/indicator-value ind (dec n))]
-      (is (= (round4 v) 127.9674)
+      (is (= (tu/round4 v) 127.9674)
           (str "BBLower expected 127.9674, got " v)))))
 
 ;;; ── PercentB[20,2.0] ─────────────────────────────────────────────────────────

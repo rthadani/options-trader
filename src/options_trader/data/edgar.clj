@@ -12,6 +12,7 @@
             [clojure.string :as str]
             [edgar.api :as e]
             [options-trader.db.queries.research-cache :as qcache]
+            [options-trader.util :as util]
             [taoensso.timbre :as log]))
 
 ;;; ── Protocol ────────────────────────────────────────────────────────────────
@@ -162,8 +163,7 @@
                  :period-of-report (:period r)
                  :source           :duckdb-cache
                  :data             (when-let [d (:data r)]
-                                     (try (json/parse-string d true)
-                                          (catch Throwable _ nil)))})
+                                     (util/safe-json-parse d))})
               rows)
 
         fallback (fetch-filings fallback symbol params)
@@ -209,6 +209,13 @@
   [src]
   (reset! default-source-holder src)
   src)
+
+(defn apply-edgar-source!
+  "When cfg contains a :data-sources/:edgar entry, create and install it
+   as the process-wide default."
+  [cfg]
+  (when-let [edgar-cfg (get-in cfg [:data-sources :edgar])]
+    (set-default-source! (make-source edgar-cfg))))
 
 (defn- env-source []
   (when-let [ua (some-> (System/getenv "EDGAR_USER_AGENT") not-empty)]

@@ -18,7 +18,8 @@
             [clojure.java.io       :as io]
             [clojure.string        :as str]
             [options-trader.paths  :as paths]
-            [options-trader.tui.proc :as proc]))
+            [options-trader.tui.proc :as proc]
+            [options-trader.util   :as util]))
 
 (defn spawn-pi
   "Return a spawn-params map {:cmd :env :cwd} for the pi CLI.
@@ -50,28 +51,12 @@
      :env {}
      :cwd cwd}))
 
-(defn ask
-  "Send message to the pi CLI via spawn-fn.
-   spawn-fn receives {:cmd :env :cwd :input} and returns {:stdout :exit}."
-  [{:keys [spawn-fn params message]}]
-  (let [spec (spawn-pi (or params {}))]
-    (spawn-fn (assoc spec :input (or message "")))))
-
 ;;; ── Stream-json parsing (pi --mode json) ──────────────────────────────────
-
-(defn- parse-jsonl-events
-  [stdout]
-  (->> (str/split-lines (or stdout ""))
-       (keep (fn [line]
-               (try (json/parse-string line true)
-                    (catch Exception _ nil))))))
 
 (defn agent-end-line?
   "Returns true if the line is pi's terminal agent_end event."
   [line]
-  (try
-    (= "agent_end" (:type (json/parse-string line true)))
-    (catch Exception _ false)))
+  (= "agent_end" (:type (util/safe-json-parse line))))
 
 (defn parse-event
   "Parse a single pi JSON line into a normalized map for the TUI.
@@ -85,38 +70,32 @@
      {:type :usage    :input-tokens :output-tokens :cost-usd}
      {:type :done}                             — agent_end, run is complete"
   [line]
-  (try
-    (let [ev (json/parse-string line true)]
-      (case (:type ev)
-        "message_update"
-        (let [ame (:assistantMessageEvent ev)]
-          (case (:type ame)
-            "text_delta"     {:type :text     :text (:delta ame)}
-            "thinking_delta" {:type :thinking :text (:delta ame)}
-            nil))
+  (when-let [ev (util/safe-json-parse line)]
+    (case (:type ev)
+      "message_update"
+      (let [ame (:assistantMessageEvent ev)]
+        (case (:type ame)
+          "text_delta"     {:type :text     :text (:delta ame)}
+          "thinking_delta" {:type :thinking :text (:delta ame)}
+          nil))
 
-        "tool_execution_start"
-        {:type :tool :name (:toolName ev) :args (:args ev) :start? true}
+      "tool_execution_start"
+      {:type :tool :name (:toolName ev) :args (:args ev) :start? true}
 
-        "tool_execution_end"
-        {:type :tool :name (:toolName ev) :error? (:isError ev) :end? true}
+      "tool_execution_end"
+      {:type :tool :name (:toolName ev) :error? (:isError ev) :end? true}
 
-        "message_end"
-        (let [u (get-in ev [:message :usage])]
-          (when u
-            {:type :usage
-             :input-tokens  (:input u)
-             :output-tokens (:output u)
-             :cost-usd      (get-in u [:cost :total])}))
+      "message_end"
+      (let [u (get-in ev [:message :usage])]
+        (when u
+          {:type :usage
+           :input-tokens  (:input u)
+           :output-tokens (:output u)
+           :cost-usd      (get-in u [:cost :total])}))
 
-        "agent_end"
-        {:type :done}
+      "agent_end"
+      {:type :done}
 
-        nil))
-    (catch Exception _ nil)))
+      nil)))
 
-(defn make-process-spawn-fn
-  "Return a real spawn-fn that invokes the pi CLI via ProcessBuilder.
-   Synchronous: writes input on stdin, slurps stdout, returns {:stdout :exit}."
-  []
-  proc/one-shot!)
+

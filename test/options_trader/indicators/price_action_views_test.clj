@@ -6,21 +6,11 @@
    (NULLIF prevents divide-by-zero when SMA collapses to zero)."
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
             [options-trader.db.duckdb :as db]
-            [options-trader.indicators.price-action-views :as pav])
-  (:import [java.io File]
-           [java.sql Date]
+            [options-trader.indicators.price-action-views :as pav]
+            [options-trader.test-util :as tu])
+  (:import [java.sql Date]
            [java.time LocalDate]))
-
-;;; ── Temp DB fixture ──────────────────────────────────────────────────────────
-
-(defn- tempfile-cfg []
-  (let [f (File/createTempFile "pav-test-" ".duckdb")]
-    (.delete f)
-    {:db {:path (.getAbsolutePath f)}}))
-
-;;; ── Seed helpers ─────────────────────────────────────────────────────────────
 
 (defn- seed-bar!
   "Insert a bars_daily row. high=close+2, low=close-2, open=close."
@@ -32,13 +22,10 @@
      (double close) (+ (double close) 2.0) (- (double close) 2.0)
      (double close) (long volume)]))
 
-(defn- fetch-row [ds sym]
-  (first (jdbc/execute! ds
-           [(str "SELECT * FROM latest_indicators WHERE symbol = '" sym "'")]
-           {:builder-fn rs/as-unqualified-lower-maps})))
-
+;; Tighter than tu/approx='s 1e-3 default — the SMA / volume-ratio
+;; expected values are exact rationals.
 (defn- approx= [a b]
-  (< (Math/abs (- (double a) (double b))) 0.0001))
+  (tu/approx= a b 1e-4))
 
 ;;; ── Happy path: 250 bars ─────────────────────────────────────────────────────
 
@@ -54,7 +41,7 @@
     ;; avg_vol_5d  = (4*1000 + 2000) / 5  = 1200
     ;; avg_vol_20d = (19*1000 + 2000) / 20 = 1050
     ;; volume_ratio_5d_vs_20d  = 1200 / 1050 ≈ 1.14286
-    (let [cfg  (tempfile-cfg)
+    (let [cfg  (tu/tempfile-cfg)
           _    (db/bootstrap! cfg)
           ds   (db/datasource cfg)
           base (LocalDate/of 2024 1 1)]
@@ -62,7 +49,7 @@
         (seed-bar! ds "HP250" (.minusDays base (- 249 i)) 100.0 1000))
       (seed-bar! ds "HP250" base 110.0 2000)
       (pav/refresh-price-action-views! ds)
-      (let [row (fetch-row ds "HP250")]
+      (let [row (tu/query-row ds "HP250")]
         (testing "row exists"
           (is (some? row)))
         (testing "close_vs_sma_50 ≈ 110/100.2"
@@ -85,14 +72,14 @@
 
 (deftest sixty-bars-test
   (testing "60 bars: sma_50 columns non-NULL, sma_200 columns NULL, volume_ratio non-NULL"
-    (let [cfg  (tempfile-cfg)
+    (let [cfg  (tu/tempfile-cfg)
           _    (db/bootstrap! cfg)
           ds   (db/datasource cfg)
           base (LocalDate/of 2024 1 1)]
       (doseq [i (range 60)]
         (seed-bar! ds "BAR60" (.minusDays base (- 59 i)) 100.0 1000))
       (pav/refresh-price-action-views! ds)
-      (let [row (fetch-row ds "BAR60")]
+      (let [row (tu/query-row ds "BAR60")]
         (testing "row exists"
           (is (some? row)))
         (testing "close_vs_sma_50 non-NULL (60 >= 50 bars)"
@@ -110,14 +97,14 @@
 
 (deftest thirty-bars-test
   (testing "30 bars: sma_50 and sma_200 columns NULL, volume_ratio non-NULL"
-    (let [cfg  (tempfile-cfg)
+    (let [cfg  (tu/tempfile-cfg)
           _    (db/bootstrap! cfg)
           ds   (db/datasource cfg)
           base (LocalDate/of 2024 1 1)]
       (doseq [i (range 30)]
         (seed-bar! ds "BAR30" (.minusDays base (- 29 i)) 100.0 1000))
       (pav/refresh-price-action-views! ds)
-      (let [row (fetch-row ds "BAR30")]
+      (let [row (tu/query-row ds "BAR30")]
         (testing "row exists"
           (is (some? row)))
         (testing "close_vs_sma_50 is NULL (30 < 50 bars)"
@@ -135,7 +122,7 @@
 
 (deftest idempotency-test
   (testing "two refresh! calls with same data produce exactly one row per symbol"
-    (let [cfg  (tempfile-cfg)
+    (let [cfg  (tu/tempfile-cfg)
           _    (db/bootstrap! cfg)
           ds   (db/datasource cfg)
           base (LocalDate/of 2024 1 1)]
@@ -145,13 +132,13 @@
       (pav/refresh-price-action-views! ds)
       (let [cnt (-> (jdbc/execute! ds
                       ["SELECT COUNT(*) AS n FROM latest_indicators WHERE symbol = 'IDEM'"]
-                      {:builder-fn rs/as-unqualified-lower-maps})
+                      tu/as-lower)
                     first :n)]
         (is (= 1 cnt) "upsert must not duplicate rows"))
       (testing "close_vs_sma_50 persists after second call"
-        (is (some? (:close_vs_sma_50 (fetch-row ds "IDEM")))))
+        (is (some? (:close_vs_sma_50 (tu/query-row ds "IDEM")))))
       (testing "volume_ratio_5d_vs_20d persists after second call"
-        (is (some? (:volume_ratio_5d_vs_20d (fetch-row ds "IDEM"))))))))
+        (is (some? (:volume_ratio_5d_vs_20d (tu/query-row ds "IDEM"))))))))
 
 ;;; ── Zero close: NULLIF guards divide-by-zero ─────────────────────────────────
 
@@ -159,14 +146,14 @@
   (testing "250 bars all close=0: NULLIF prevents divide-by-zero, sma columns NULL"
     ;; When all closes are zero, sma_50_raw=0 and sma_200_raw=0.
     ;; NULLIF(0.0, 0.0) = NULL, so close/NULL = NULL and (close-NULL)/NULL = NULL.
-    (let [cfg  (tempfile-cfg)
+    (let [cfg  (tu/tempfile-cfg)
           _    (db/bootstrap! cfg)
           ds   (db/datasource cfg)
           base (LocalDate/of 2024 1 1)]
       (doseq [i (range 250)]
         (seed-bar! ds "ZERO" (.minusDays base (- 249 i)) 0.0 1000))
       (pav/refresh-price-action-views! ds)
-      (let [row (fetch-row ds "ZERO")]
+      (let [row (tu/query-row ds "ZERO")]
         (testing "row exists"
           (is (some? row)))
         (testing "close_vs_sma_50 is NULL when sma_50=0"

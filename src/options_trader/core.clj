@@ -6,7 +6,8 @@
             [options-trader.db.duckdb :as db]
             [options-trader.logging :as log]
             [options-trader.paths :as paths]
-            [options-trader.tui.main :as tui])
+            [options-trader.tui.main :as tui]
+            [options-trader.util :as util])
   (:gen-class))
 
 (def ^:private tui-client-id
@@ -47,8 +48,7 @@
    path under both prefix and target. Returns the list of entries seeded."
   [resource-prefix ^java.io.File target-dir relative-path-fn]
   (when-let [manifest-res (io/resource (str resource-prefix "/manifest.edn"))]
-    (let [names (try (read-string (slurp manifest-res))
-                     (catch Throwable _ nil))]
+    (let [names (util/safe-edn-read (slurp manifest-res))]
       (doseq [nm names
               :let [rel (relative-path-fn nm)]]
         (seed-from-resource! (str resource-prefix "/" rel)
@@ -100,7 +100,7 @@
       (doseq [nm skill-names
               :let [files-res (io/resource (str "runtime/claude/skills/" nm "/files.edn"))]
               :when files-res
-              rel (try (read-string (slurp files-res)) (catch Throwable _ nil))]
+              rel (util/safe-edn-read (slurp files-res))]
         (seed-from-resource! (str "runtime/claude/skills/" nm "/" rel)
                              (io/file skills-dir nm rel))))
     (link-claude-credentials! dir)
@@ -137,8 +137,7 @@
   []
   (let [dir (paths/ensure-dir! (paths/screens-dir))]
     (when-let [manifest-res (io/resource "screens/manifest.edn")]
-      (let [names (try (read-string (slurp manifest-res))
-                       (catch Throwable _ nil))]
+      (let [names (util/safe-edn-read (slurp manifest-res))]
         (doseq [nm names
                 :let [fname (str nm ".screen")]]
           (seed-from-resource! (str "screens/" fname)
@@ -153,10 +152,6 @@
   []
   (seed-from-resource! "indicators.edn"
                        (io/file (paths/indicators-file))))
-
-(defn- apply-edgar-source! [cfg]
-  (when-let [edgar-cfg (get-in cfg [:data-sources :edgar])]
-    (edgar/set-default-source! (edgar/make-source edgar-cfg))))
 
 (defn- init! [cfg]
   (println "Initializing Options Trader...")
@@ -206,7 +201,7 @@
       (seed-overlay-md!)
       (seed-packaged-screens!)
       (seed-indicators!)
-      (apply-edgar-source! cfg)
+      (edgar/apply-edgar-source! cfg)
       (try
         (db/bootstrap! cfg)
         (catch Throwable t

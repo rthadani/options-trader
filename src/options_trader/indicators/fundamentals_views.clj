@@ -67,7 +67,6 @@
 
 ;;; ── DB I/O ──────────────────────────────────────────────────────────────────
 
-(defn- all-symbols    [ds]     (q/all-bars-daily-symbols ds))
 (defn- latest-close   [ds sym] (q/latest-close ds sym))
 
 (defn- persist-fundamentals! [ds sym period payload]
@@ -97,7 +96,7 @@
    (refresh-fundamentals-views! ds source {}))
   ([ds source {:keys [symbols]}]
    (ensure-schema! ds)
-   (let [syms        (or (seq symbols) (all-symbols ds))
+   (let [syms        (or (seq symbols) (q/all-bars-daily-symbols ds))
          total       (count syms)
          oom-cap     5
          step!

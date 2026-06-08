@@ -10,9 +10,7 @@
    execute-batch! one row at a time."
   (:require [hugsql.core :as hugsql]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]))
-
-(def ^:private as-lower {:builder-fn rs/as-unqualified-lower-maps})
+            [options-trader.util :refer [as-lower query-scalar]]))
 
 ;; Generates options-trader.db.queries.refresh/<name>-sqlvec for every
 ;; -- :name in resources/sql/refresh.sql. Each returns [sql & params].
@@ -21,7 +19,7 @@
 ;;; ── refresh_log ─────────────────────────────────────────────────────
 
 (defn next-refresh-log-id [ds]
-  (-> (jdbc/execute-one! ds (next-refresh-log-id-sqlvec) as-lower) :n))
+  (query-scalar ds (next-refresh-log-id-sqlvec) :n))
 
 (defn insert-refresh-log! [ds {:keys [id task symbol started-at]}]
   (jdbc/execute-one! ds (insert-refresh-log-sqlvec
@@ -33,55 +31,45 @@
                           {:id id :status status :error error
                            :finished-at finished-at})))
 
+;;; ── Internal helpers ────────────────────────────────────────────────
+
+(defn- execute-batch! [ds sqlvec rows]
+  (when (seq rows)
+    (let [[sql] sqlvec]
+      (jdbc/execute-batch! ds sql rows {})))
+  (count rows))
+
 ;;; ── bars_daily ──────────────────────────────────────────────────────
 
 (defn latest-bar-date [ds symbol]
-  (some-> (jdbc/execute-one! ds (latest-bar-date-sqlvec {:symbol symbol}) as-lower)
-          :d))
+  (query-scalar ds (latest-bar-date-sqlvec {:symbol symbol}) :d))
 
 (defn insert-bars-daily-batch! [ds rows]
-  (when (seq rows)
-    (let [[sql] (insert-bars-daily-batch-sqlvec)]
-      (jdbc/execute-batch! ds sql rows {})))
-  (count rows))
+  (execute-batch! ds (insert-bars-daily-batch-sqlvec) rows))
 
 ;;; ── bars_intraday ───────────────────────────────────────────────────
 
 (defn latest-intraday-ts [ds symbol bar-size]
-  (some-> (jdbc/execute-one! ds
-            (latest-intraday-ts-sqlvec {:symbol symbol :bar-size bar-size})
-            as-lower)
-          :t))
+  (query-scalar ds (latest-intraday-ts-sqlvec {:symbol symbol :bar-size bar-size}) :t))
 
 (defn insert-bars-intraday-batch! [ds rows]
-  (when (seq rows)
-    (let [[sql] (insert-bars-intraday-batch-sqlvec)]
-      (jdbc/execute-batch! ds sql rows {})))
-  (count rows))
+  (execute-batch! ds (insert-bars-intraday-batch-sqlvec) rows))
 
 ;;; ── news ────────────────────────────────────────────────────────────
 
 (defn latest-news-published [ds symbol]
-  (some-> (jdbc/execute-one! ds (latest-news-published-sqlvec {:symbol symbol}) as-lower)
-          :t))
+  (query-scalar ds (latest-news-published-sqlvec {:symbol symbol}) :t))
 
 (defn insert-news-batch! [ds rows]
-  (when (seq rows)
-    (let [[sql] (insert-news-batch-sqlvec)]
-      (jdbc/execute-batch! ds sql rows {})))
-  (count rows))
+  (execute-batch! ds (insert-news-batch-sqlvec) rows))
 
 ;;; ── filings ─────────────────────────────────────────────────────────
 
 (defn latest-filing-date [ds symbol]
-  (some-> (jdbc/execute-one! ds (latest-filing-date-sqlvec {:symbol symbol}) as-lower)
-          :d))
+  (query-scalar ds (latest-filing-date-sqlvec {:symbol symbol}) :d))
 
 (defn insert-filings-batch! [ds rows]
-  (when (seq rows)
-    (let [[sql] (insert-filings-batch-sqlvec)]
-      (jdbc/execute-batch! ds sql rows {})))
-  (count rows))
+  (execute-batch! ds (insert-filings-batch-sqlvec) rows))
 
 ;;; ── universes ───────────────────────────────────────────────────────
 
@@ -91,7 +79,7 @@
        set))
 
 (defn next-drift-id [ds]
-  (-> (jdbc/execute-one! ds (next-universe-drift-id-sqlvec) as-lower) :n))
+  (query-scalar ds (next-universe-drift-id-sqlvec) :n))
 
 (defn insert-drift! [ds {:keys [id universe symbol action]}]
   (jdbc/execute-one! ds (insert-universe-drift-sqlvec
@@ -111,7 +99,7 @@
 ;;; ── iv_daily ─────────────────────────────────────────────────────────
 
 (defn latest-iv-date [ds symbol]
-  (:d (jdbc/execute-one! ds (latest-iv-date-sqlvec {:symbol symbol}) as-lower)))
+  (query-scalar ds (latest-iv-date-sqlvec {:symbol symbol}) :d))
 
 (defn upsert-iv-row! [ds {:keys [symbol iv-date iv30 hv30]}]
   (jdbc/execute-one! ds

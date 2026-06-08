@@ -64,10 +64,6 @@
         handler  (partial handle-request registry ctx)]
     (protocol/stdio-loop rdr wtr handler)))
 
-(defn- apply-edgar-source! [cfg]
-  (when-let [edgar-cfg (get-in cfg [:data-sources :edgar])]
-    (edgar/set-default-source! (edgar/make-source edgar-cfg))))
-
 (defn- open-ib! [cfg]
   (when-let [{:keys [host port]} (:ibkr cfg)]
     (try
@@ -86,7 +82,7 @@
                          (println "warning: failed to load config —" (.getMessage t)))
                        nil))]
     (when cfg
-      (apply-edgar-source! cfg))
+      (edgar/apply-edgar-source! cfg))
     (let [rdr       (java.io.BufferedReader. (java.io.InputStreamReader. System/in))
           wtr       (java.io.PrintWriter. System/out true)
           ds        (when cfg

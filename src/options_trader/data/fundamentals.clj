@@ -3,6 +3,7 @@
             [options-trader.data.ibkr :as ibkr]
             [options-trader.data.sources :as sources]
             [options-trader.db.queries.research-cache :as qcache]
+            [options-trader.util      :as util]
             [edgar.api                :as edgar]
             [taoensso.timbre          :as log]))
 
@@ -210,8 +211,7 @@
                           (log/warnf t "duckdb fundamentals lookup failed for %s" symbol)
                           nil))
           payload  (when raw-data
-                     (try (json/parse-string raw-data true)
-                          (catch Throwable _ nil)))]
+                     (util/safe-json-parse raw-data))]
       (cond
         payload  (do (callback [(assoc payload :source :duckdb-cache)]) :ok)
         fallback (fetch fallback symbol _params callback)

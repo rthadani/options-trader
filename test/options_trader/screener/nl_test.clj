@@ -1,7 +1,8 @@
 (ns options-trader.screener.nl-test
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
-            [options-trader.screener.nl :as nl]))
+            [options-trader.screener.nl :as nl]
+            [options-trader.test-util :as tu]))
 
 (defn- make-test-ds []
   (Class/forName "org.duckdb.DuckDBDriver")
@@ -15,9 +16,6 @@
           bb_lower  DOUBLE,
           pivot_r1  DOUBLE)"])
     conn))
-
-(defn- canned-sh [stdout]
-  (fn [& _args] {:exit 0 :out stdout :err ""}))
 
 (deftest schema-summary-includes-columns-with-meanings
   (let [ds (make-test-ds)
@@ -35,7 +33,7 @@
   (let [ds  (make-test-ds)
         res (nl/description->sql ds
               "Oversold names with RSI below 30"
-              {:sh-fn (canned-sh "SELECT symbol FROM latest_indicators WHERE rsi_14 < 30 ORDER BY rsi_14 ASC LIMIT 25")})]
+              {:sh-fn (tu/canned-sh "SELECT symbol FROM latest_indicators WHERE rsi_14 < 30 ORDER BY rsi_14 ASC LIMIT 25")})]
     (is (= "SELECT symbol FROM latest_indicators WHERE rsi_14 < 30 ORDER BY rsi_14 ASC LIMIT 25"
            (:sql res)))
     (is (nil? (:error res)))
@@ -45,21 +43,21 @@
   (let [ds  (make-test-ds)
         res (nl/description->sql ds
               "Anything"
-              {:sh-fn (canned-sh "```sql\nSELECT symbol FROM latest_indicators LIMIT 5\n```")})]
+              {:sh-fn (tu/canned-sh "```sql\nSELECT symbol FROM latest_indicators LIMIT 5\n```")})]
     (is (= "SELECT symbol FROM latest_indicators LIMIT 5" (:sql res)))))
 
 (deftest description->sql-detects-missing-column
   (let [ds  (make-test-ds)
         res (nl/description->sql ds
               "Stocks with positive sortino ratio"
-              {:sh-fn (canned-sh "MISSING sortino")})]
+              {:sh-fn (tu/canned-sh "MISSING sortino")})]
     (is (= "sortino" (:missing res)))
     (is (nil? (:sql res)))))
 
 (deftest description->sql-empty-response-is-error
   (let [ds  (make-test-ds)
         res (nl/description->sql ds "anything"
-              {:sh-fn (canned-sh "")})]
+              {:sh-fn (tu/canned-sh "")})]
     (is (some? (:error res)))
     (is (nil? (:sql res)))))
 

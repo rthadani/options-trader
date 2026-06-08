@@ -3,7 +3,8 @@
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
             [options-trader.data.ibkr :as ibkr]
-            [options-trader.portfolio.core :as portfolio]))
+            [options-trader.portfolio.core :as portfolio]
+            [options-trader.test-util :as tu]))
 
 (defn- make-test-ds []
   (Class/forName "org.duckdb.DuckDBDriver")
@@ -102,7 +103,7 @@
       (is (= "DU123456" (:account-id result)))
       (let [rows (jdbc/execute! ds
                    ["SELECT * FROM positions WHERE account = 'DU123456'"]
-                   {:builder-fn rs/as-unqualified-lower-maps})]
+                   tu/as-lower)]
         (is (= (:positions result) (count rows)))))))
 
 (deftest refresh!-populates-account-summary-test
@@ -112,7 +113,7 @@
       (portfolio/refresh! src ds "DU123456")
       (let [rows (jdbc/execute! ds
                    ["SELECT * FROM account_summary WHERE account = 'DU123456'"]
-                   {:builder-fn rs/as-unqualified-lower-maps})]
+                   tu/as-lower)]
         (is (= 1 (count rows)))
         (is (pos? (-> rows first :net_liq)))))))
 
@@ -124,7 +125,7 @@
       (portfolio/refresh! src ds "DU123456")
       (let [rows (jdbc/execute! ds
                    ["SELECT COUNT(*) AS cnt FROM positions WHERE account = 'DU123456'"]
-                   {:builder-fn rs/as-unqualified-lower-maps})]
+                   tu/as-lower)]
         (is (= (count (portfolio/positions src))
                (:cnt (first rows))))))))
 
@@ -155,7 +156,7 @@
         (portfolio/positions src)
         (let [rows (jdbc/execute! ds
                      ["SELECT COUNT(*) AS cnt FROM positions WHERE account = 'DU999'"]
-                     {:builder-fn rs/as-unqualified-lower-maps})]
+                     tu/as-lower)]
           (is (= 1 (:cnt (first rows)))))))))
 
 (deftest jdbc-store-read-positions-test
@@ -188,7 +189,7 @@
       (portfolio/write-positions! store "DU999" [test-position])
       (let [rows (jdbc/execute! ds
                    ["SELECT * FROM positions WHERE account = 'DU999'"]
-                   {:builder-fn rs/as-unqualified-lower-maps})]
+                   tu/as-lower)]
         (is (= 1 (count rows)))
         (is (= "TSLA" (:symbol (first rows))))))))
 

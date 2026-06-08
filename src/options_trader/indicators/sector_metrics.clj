@@ -4,11 +4,9 @@
    (sector-quartiles, symbol-sector-percentrank, plus the
    sector_metrics table DDL)."
   (:require [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
+            [options-trader.util :refer [as-lower]]
             [options-trader.db.queries.indicators :as q])
   (:import [java.time LocalDate]))
-
-(def ^:private as-lower {:builder-fn rs/as-unqualified-lower-maps})
 
 (defn- ensure-schema! [ds]
   ;; Bootstrap migration creates sector_metrics with a different PK

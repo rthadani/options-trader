@@ -1,9 +1,7 @@
 (ns options-trader.db.queries.portfolio
   (:require [hugsql.core :as hugsql]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]))
-
-(def ^:private as-lower {:builder-fn rs/as-unqualified-lower-maps})
+            [options-trader.util :refer [as-lower query-scalar]]))
 
 (hugsql/def-sqlvec-fns "sql/portfolio.sql")
 
@@ -20,10 +18,10 @@
   (jdbc/execute-one! ds (select-account-summary-sqlvec {:account account}) as-lower))
 
 (defn default-account-from-positions [ds]
-  (-> (jdbc/execute-one! ds (default-account-from-positions-sqlvec) as-lower) :account))
+  (query-scalar ds (default-account-from-positions-sqlvec) :account))
 
 (defn default-account-from-summary [ds]
-  (-> (jdbc/execute-one! ds (default-account-from-summary-sqlvec) as-lower) :account))
+  (query-scalar ds (default-account-from-summary-sqlvec) :account))
 
 (defn query-portfolio-summary [ds]
   (jdbc/execute! ds (select-portfolio-summary-sqlvec) as-lower))

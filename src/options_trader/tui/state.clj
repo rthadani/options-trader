@@ -1,9 +1,9 @@
 (ns options-trader.tui.state
   "Single source of truth for the TUI's mutable state. Render is a pure
    function of this atom plus the terminal dimensions."
-  (:require [clojure.edn     :as edn]
-            [clojure.java.io :as io]
-            [options-trader.paths :as paths]))
+  (:require [clojure.java.io :as io]
+            [options-trader.paths :as paths]
+            [options-trader.util :as util]))
 
 (def ^:const max-input-history
   "Cap the persisted history to a sliding window so the file can't grow
@@ -267,22 +267,17 @@
   []
   (let [path (paths/input-history-file)
         hist (:input-history @state)]
-    (try
-      (io/make-parents path)
-      (spit path (pr-str hist))
-      (catch Exception _ nil))))
+    (util/safe-spit path (pr-str hist))))
 
 (defn load-input-history!
   "Restore the input-history vector from disk on TUI startup. Missing or
    malformed file → start empty, no crash."
   []
   (let [path (paths/input-history-file)]
-    (try
-      (when (.exists (io/file path))
-        (let [hist (edn/read-string (slurp path))]
-          (when (vector? hist)
-            (swap! state assoc :input-history hist :history-idx nil))))
-      (catch Exception _ nil))))
+    (when-let [hist (and (.exists (io/file path))
+                         (util/safe-edn-read (slurp path)))]
+      (when (vector? hist)
+        (swap! state assoc :input-history hist :history-idx nil)))))
 
 (defn persist-tui-prefs!
   "Write current agent/model/provider to <config-root>/tui-prefs.edn so the
@@ -293,26 +288,21 @@
         prefs {:agent    (:agent s)
                :model    (:model s)
                :provider (:provider s)}]
-    (try
-      (io/make-parents path)
-      (spit path (pr-str prefs))
-      (catch Exception _ nil))))
+    (util/safe-spit path (pr-str prefs))))
 
 (defn load-tui-prefs!
   "Restore agent/model/provider from disk on TUI startup. Missing or
    malformed file → keep initial defaults."
   []
   (let [path (paths/tui-prefs-file)]
-    (try
-      (when (.exists (io/file path))
-        (let [prefs (edn/read-string (slurp path))]
-          (when (map? prefs)
-            (swap! state merge
-                   (cond-> {}
-                     (:agent    prefs) (assoc :agent    (:agent prefs))
-                     (:model    prefs) (assoc :model    (:model prefs))
-                     (:provider prefs) (assoc :provider (:provider prefs)))))))
-      (catch Exception _ nil))))
+    (when-let [prefs (and (.exists (io/file path))
+                          (util/safe-edn-read (slurp path)))]
+      (when (map? prefs)
+        (swap! state merge
+               (cond-> {}
+                 (:agent    prefs) (assoc :agent    (:agent prefs))
+                 (:model    prefs) (assoc :model    (:model prefs))
+                 (:provider prefs) (assoc :provider (:provider prefs))))))))
 
 (defn push-input-history!
   "Append text to history, drop duplicates of the immediately-prior entry,

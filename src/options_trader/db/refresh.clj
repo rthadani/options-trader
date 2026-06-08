@@ -13,7 +13,8 @@
             [options-trader.data.yfinance    :as yf]
             [options-trader.db.queries.refresh :as q]
             [options-trader.indicators.engine :as indicators]
-            [options-trader.portfolio.core   :as portfolio])
+            [options-trader.portfolio.core   :as portfolio]
+            [options-trader.util :refer [as-lower]])
   (:import [java.time LocalDate LocalDateTime Instant ZoneId Duration]
            [java.time.format DateTimeFormatter]
            [java.time.temporal ChronoUnit]
@@ -22,8 +23,6 @@
 
 (def ^:private news-date-fmt
   (DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss.0"))
-
-(def ^:private as-lower {:builder-fn rs/as-unqualified-lower-maps})
 
 (defn- now-ts [] (Timestamp. (System/currentTimeMillis)))
 
@@ -188,9 +187,9 @@
 (defn latest-bar-date [ds sym]
   (q/latest-bar-date ds sym))
 
-(defn duration-for-gap [last-d]
+(defn- duration-for-gap* [last-d nil-default]
   (if (nil? last-d)
-    "5 Y"
+    nil-default
     (let [^LocalDate ld (if (instance? LocalDate last-d) last-d (.toLocalDate last-d))
           days (.until ld (LocalDate/now) ChronoUnit/DAYS)]
       (cond
@@ -199,6 +198,9 @@
         (<= days 30) "1 M"
         (<= days 90) "3 M"
         :else        "1 Y"))))
+
+(defn duration-for-gap [last-d]
+  (duration-for-gap* last-d "5 Y"))
 
 (defn- insert-bars-daily! [ds bars]
   (let [rows (->> bars
@@ -454,16 +456,7 @@
 ;;; ── IV / HV daily history ──────────────────────────────────────────────────
 
 (defn- iv-duration-for-gap [last-d]
-  (if (nil? last-d)
-    "2 Y"
-    (let [^LocalDate ld (if (instance? LocalDate last-d) last-d (.toLocalDate last-d))
-          days (.until ld (LocalDate/now) ChronoUnit/DAYS)]
-      (cond
-        (<= days 1)  "2 D"
-        (<= days 7)  "1 W"
-        (<= days 30) "1 M"
-        (<= days 90) "3 M"
-        :else        "1 Y"))))
+  (duration-for-gap* last-d "2 Y"))
 
 (defn- ib-reconnect!
   "Drop and reopen the IB API connection with the same credentials. IB

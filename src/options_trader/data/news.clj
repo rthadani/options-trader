@@ -2,10 +2,8 @@
   (:require [options-trader.data.ibkr :as ibkr]
             [options-trader.data.sources :as sources]
             [options-trader.db.queries.research-cache :as q]
-            [cheshire.core :as json]
-            [clojure.edn :as edn]
-            [clojure.java.io :as io]
             [clojure.string :as str]
+            [options-trader.util :as util]
             [taoensso.timbre :as log])
   (:import [java.time LocalDateTime]
            [java.time.format DateTimeFormatter]))
@@ -13,7 +11,7 @@
 ;;; ── Lexicon-based sentiment ─────────────────────────────────────────────────
 
 (def ^:private lexicon
-  (delay (edn/read-string (slurp (io/resource "sentiment-lexicon.edn")))))
+  (delay (util/read-edn-resource "sentiment-lexicon.edn")))
 
 (defn- strip-ib-meta
   "IBKR headlines from BRFG and similar providers prepend a metadata block
@@ -173,8 +171,7 @@
                          :time         (:published_at r)
                          :sentiment    (:sentiment r)
                          :body         (when-let [d (:data r)]
-                                         (try (json/parse-string d true)
-                                              (catch Throwable _ nil)))}))
+                                         (util/safe-json-parse d))}))
             (callback {:type :historical-news-end})
             :ok)
 

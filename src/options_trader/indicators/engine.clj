@@ -16,8 +16,7 @@
             [options-trader.indicators.sector-metrics :as sector-metrics]
             [options-trader.indicators.ta4j :as ta4j]
             [options-trader.paths :as paths]
-            [taoensso.timbre :as log])
-  (:import [java.time ZoneOffset]))
+            [taoensso.timbre :as log]))
 
 (defn load-config
   "Read indicators config as EDN. Prefers the user-writable file at
@@ -30,26 +29,12 @@
 
 ;;; ── Bar loading ─────────────────────────────────────────────────────────────
 
-(defn- local-date->epoch-ms [d]
-  (-> d
-      (.atStartOfDay ZoneOffset/UTC)
-      .toInstant
-      .toEpochMilli))
-
 (defn load-bars
   "Load bars_daily rows for symbol from ds, sorted ascending by date.
    Returns maps with :bar_date, :time (epoch-ms), :open, :high, :low,
    :close, :volume."
   [ds symbol]
-  (mapv (fn [r]
-          {:bar_date (:bar_date r)
-           :time     (local-date->epoch-ms (:bar_date r))
-           :open     (double (or (:open r) 0.0))
-           :high     (double (or (:high r) 0.0))
-           :low      (double (or (:low r) 0.0))
-           :close    (double (or (:close r) 0.0))
-           :volume   (long   (or (:volume r) 0))})
-        (q/load-bars-daily ds symbol)))
+  (ta4j/load-bars ds symbol))
 
 ;;; ── Indicator construction ──────────────────────────────────────────────────
 
@@ -231,8 +216,7 @@
                    "VARCHAR")]
     (q/ensure-column-with-type! ds :latest_indicators (:column spec) sql-type)))
 
-(defn- upsert-row! [ds symbol values]
-  (q/upsert-latest-row! ds symbol values))
+
 
 ;;; ── History persistence ─────────────────────────────────────────────────────
 
@@ -275,7 +259,7 @@
       (doseq [[col v] values]
         (insert-history! ds symbol (name col) last-date v))
       ;; Upsert all base indicator values
-      (upsert-row! ds symbol values)
+      (q/upsert-latest-row! ds symbol values)
       ;; Ensure composite columns exist with appropriate SQL types
       (doseq [spec comp-specs]
         (ensure-composite-column! ds spec))
@@ -287,7 +271,7 @@
                                          (when (some? v) [(:column spec) v])))
                                      comp-specs))]
           (when (seq comp-values)
-            (upsert-row! ds symbol comp-values))))
+            (q/upsert-latest-row! ds symbol comp-values))))
       ;; Compute percentile ranks for configured base indicators
       (doseq [spec   specs
               :let   [windows (:percentile-windows spec)]
@@ -299,7 +283,7 @@
               pct-val (compute-percentile! ds symbol ind-key n-days)]
           (when (some? pct-val)
             (ensure-column! ds pct-col)
-            (upsert-row! ds symbol {pct-col pct-val})))))))
+            (q/upsert-latest-row! ds symbol {pct-col pct-val})))))))
 
 (defn- run-pass!
   "Time and log one indicator pass. Surfaces which sub-step is slow so a

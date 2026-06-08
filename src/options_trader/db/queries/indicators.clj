@@ -5,9 +5,7 @@
   (:require [clojure.string :as str]
             [hugsql.core :as hugsql]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]))
-
-(def ^:private as-lower {:builder-fn rs/as-unqualified-lower-maps})
+            [options-trader.util :refer [as-lower query-scalar]]))
 
 (hugsql/def-sqlvec-fns "sql/indicators.sql")
 
@@ -33,7 +31,7 @@
 (defn latest-close
   "Most-recent close from bars_daily for symbol, or nil."
   [ds symbol]
-  (:close (jdbc/execute-one! ds (latest-close-sqlvec {:symbol symbol}) as-lower)))
+  (query-scalar ds (latest-close-sqlvec {:symbol symbol}) :close))
 
 (defn persist-fundamentals!
   "Upsert one row into fundamentals keyed on (symbol, period). data is
@@ -56,11 +54,9 @@
    window. Returns nil when no history rows exist for that symbol +
    indicator."
   [ds {:keys [symbol indicator n-days]}]
-  (-> (jdbc/execute-one! ds
-        (percent-rank-latest-sqlvec
-          {:symbol symbol :indicator indicator :n-days n-days})
-        as-lower)
-      :pr))
+  (query-scalar ds (percent-rank-latest-sqlvec
+                      {:symbol symbol :indicator indicator :n-days n-days})
+                :pr))
 
 ;;; ── Schema helpers ───────────────────────────────────────────────────
 ;;

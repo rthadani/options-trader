@@ -2,84 +2,55 @@
   "Integration test: seeds bars_daily in a temp DuckDB, runs compute-many,
    and asserts latest_indicators has the expected indicator values."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [clojure.edn :as edn]
-            [clojure.java.io :as io]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
             [options-trader.db.duckdb :as db]
             [options-trader.indicators.engine :as engine]
-            [options-trader.indicators.ta4j :as ta4j])
-  (:import [java.io File]
-           [java.sql Date]))
-
-;;; ── Temp DB fixture ──────────────────────────────────────────────────────────
-
-(defn- tempfile-cfg []
-  (let [f (File/createTempFile "engine-test-" ".duckdb")]
-    (.delete f)
-    {:db {:path (.getAbsolutePath f)}}))
-
-;;; ── Fixture data ─────────────────────────────────────────────────────────────
-
-(def ^:private raw-bars
-  (edn/read-string (slurp (io/resource "fixtures/ohlcv-50.edn"))))
-
-(defn- seed-bars! [ds sym bars]
-  (doseq [b bars]
-    (jdbc/execute! ds
-      ["INSERT INTO bars_daily (symbol, bar_date, open, high, low, close, volume)
-        VALUES (?, ?, ?, ?, ?, ?, ?)"
-       sym
-       (Date/valueOf ^String (:bar_date b))
-       (:open b) (:high b) (:low b) (:close b) (:volume b)])))
-
-;;; ── Rounding helper ──────────────────────────────────────────────────────────
-
-(defn- round4 [x]
-  (Double/parseDouble (format "%.4f" x)))
+            [options-trader.indicators.ta4j :as ta4j]
+            [options-trader.test-util :as tu])
+  (:import [java.sql Date]))
 
 ;;; ── Tests ────────────────────────────────────────────────────────────────────
 
 (deftest compute-many-upserts-latest-indicators-test
   (testing "compute-many populates latest_indicators with correct values"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
-      (seed-bars! ds "TEST" raw-bars)
+      (tu/seed-bars! ds "TEST" tu/raw-bars)
       (engine/compute-many ds "TEST")
       (let [rows (jdbc/execute! ds
                    ["SELECT * FROM latest_indicators WHERE symbol = 'TEST'"]
-                   {:builder-fn rs/as-unqualified-lower-maps})
+                   tu/as-lower)
             row  (first rows)]
         (testing "exactly one row"
           (is (= 1 (count rows))))
         (testing "RSI[14] = 100.0000"
-          (is (= (round4 (:rsi_14 row)) 100.0)
+          (is (= (tu/round4 (:rsi_14 row)) 100.0)
               (str "rsi_14 expected 100.0, got " (:rsi_14 row))))
         (testing "ATR[14] = 3.0000"
-          (is (= (round4 (:atr_14 row)) 3.0)
+          (is (= (tu/round4 (:atr_14 row)) 3.0)
               (str "atr_14 expected 3.0, got " (:atr_14 row))))
         (testing "BollingerBandWidth[20,2.0] = 16.5341"
-          (is (= (round4 (:bb_width row)) 16.5341)
+          (is (= (tu/round4 (:bb_width row)) 16.5341)
               (str "bb_width expected 16.5341, got " (:bb_width row))))))))
 
 (deftest compute-many-idempotent-test
   (testing "calling compute-many twice overwrites the row (not duplicates)"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
-      (seed-bars! ds "TEST" raw-bars)
+      (tu/seed-bars! ds "TEST" tu/raw-bars)
       (engine/compute-many ds "TEST")
       (engine/compute-many ds "TEST")
       (let [rows (jdbc/execute! ds
                    ["SELECT * FROM latest_indicators WHERE symbol = 'TEST'"]
-                   {:builder-fn rs/as-unqualified-lower-maps})]
+                   tu/as-lower)]
         (is (= 1 (count rows))
             "upsert must not duplicate rows")))))
 
 (deftest percentile-rank-test
   (testing "atr_14_percentile_126d column exists and is in [0.0, 1.0] after compute-many"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
       ;; Seed indicator_history with extra ATR values so PERCENT_RANK is well-defined.
@@ -90,11 +61,11 @@
         (jdbc/execute! ds
           ["INSERT INTO indicator_history (symbol, indicator, ind_date, value) VALUES ('TEST', 'atr_14', ?, ?)"
            (Date/valueOf ^String d) v]))
-      (seed-bars! ds "TEST" raw-bars)
+      (tu/seed-bars! ds "TEST" tu/raw-bars)
       (engine/compute-many ds "TEST")
       (let [rows (jdbc/execute! ds
                    ["SELECT * FROM latest_indicators WHERE symbol = 'TEST'"]
-                   {:builder-fn rs/as-unqualified-lower-maps})
+                   tu/as-lower)
             row  (first rows)
             pct  (:atr_14_percentile_126d row)]
         (testing "percentile column exists"
@@ -125,16 +96,16 @@
 
 (deftest composite-columns-integration-test
   (testing "compute-many populates all five composite columns"
-    (let [cfg (tempfile-cfg)
+    (let [cfg (tu/tempfile-cfg)
           _   (db/bootstrap! cfg)
           ds  (db/datasource cfg)]
-      (seed-bars! ds "TEST" raw-bars)
+      (tu/seed-bars! ds "TEST" tu/raw-bars)
       (engine/compute-many ds "TEST")
       (let [rows (jdbc/execute! ds
                    ["SELECT ttm_squeeze_flag, macd_cross_flag, mass_reversal_flag,
                             psar_flip_flag, obv_trend
                      FROM latest_indicators WHERE symbol = 'TEST'"]
-                   {:builder-fn rs/as-unqualified-lower-maps})
+                   tu/as-lower)
             row  (first rows)]
         (testing "all five composite columns are present and non-nil"
           (is (some? (:ttm_squeeze_flag row))   "ttm_squeeze_flag must be populated")
@@ -231,7 +202,7 @@
                           {:time   (long (* (.getTime (Date/valueOf ^String (:bar_date b))) 1))
                            :open   (:open b) :high (:high b)
                            :low    (:low b)  :close (:close b) :volume (:volume b)})
-                        raw-bars)
+                        tu/raw-bars)
           series  (ta4j/ds->ta4j-ohlcv bars)
           psar-ind (ta4j/parabolic-sar series 0.02 0.02 0.2)
           spec    {:column :psar_flip_flag :kind :psar-flip :requires [:psar :close]}

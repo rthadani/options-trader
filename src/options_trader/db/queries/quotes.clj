@@ -1,15 +1,12 @@
 (ns options-trader.db.queries.quotes
   (:require [hugsql.core :as hugsql]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]))
-
-(def ^:private as-lower {:builder-fn rs/as-unqualified-lower-maps})
+            [options-trader.util :refer [as-lower query-scalar]]))
 
 (hugsql/def-sqlvec-fns "sql/quotes.sql")
 
 (defn avg-volume [ds symbol n-days]
-  (-> (jdbc/execute-one! ds (avg-volume-sqlvec {:symbol symbol :n-days n-days}) as-lower)
-      :avg))
+  (query-scalar ds (avg-volume-sqlvec {:symbol symbol :n-days n-days}) :avg))
 
 (defn pc-ratios [ds symbol]
   (let [row (jdbc/execute-one! ds (pc-ratios-sqlvec {:symbol symbol}) as-lower)]

@@ -1,10 +1,10 @@
 (ns options-trader.screener.registry
   (:require [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
             [cheshire.core :as json]
             [hawk.core :as hawk]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [options-trader.util :refer [as-lower]]
             [options-trader.paths :as paths]
             [options-trader.screener.nl :as nl])
   (:import [java.util UUID]
@@ -99,7 +99,7 @@
   "Return a vector of all screen maps from the screens table."
   [ds]
   (->> (jdbc/execute! ds [(str screen-cols " ORDER BY name")]
-                      {:builder-fn rs/as-unqualified-lower-maps})
+                      as-lower)
        (mapv row->screen)))
 
 (defn get-screen
@@ -108,10 +108,10 @@
   (let [s (str id-or-name)
         row (or (first (jdbc/execute! ds
                          [(str screen-cols " WHERE id = ?") s]
-                         {:builder-fn rs/as-unqualified-lower-maps}))
+                         as-lower))
                 (first (jdbc/execute! ds
                          [(str screen-cols " WHERE name = ?") s]
-                         {:builder-fn rs/as-unqualified-lower-maps})))]
+                         as-lower)))]
     (row->screen row)))
 
 (defn save-screen!
@@ -160,7 +160,7 @@
   [ds query-str]
   (try
     {:results (jdbc/execute! ds [query-str]
-                             {:builder-fn rs/as-unqualified-lower-maps})}
+                             as-lower)}
     (catch Exception e
       {:error (.getMessage e) :results []})))
 

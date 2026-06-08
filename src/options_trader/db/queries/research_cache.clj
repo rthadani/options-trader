@@ -3,16 +3,14 @@
    SQL: resources/sql/research_cache.sql."
   (:require [hugsql.core :as hugsql]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]))
-
-(def ^:private as-lower {:builder-fn rs/as-unqualified-lower-maps})
+            [options-trader.util :refer [as-lower query-scalar]]))
 
 (hugsql/def-sqlvec-fns "sql/research_cache.sql")
 
 (defn latest-fundamentals
   "Raw `data` JSON string for the most recent fundamentals row, or nil."
   [ds symbol]
-  (:data (jdbc/execute-one! ds (latest-fundamentals-sqlvec {:symbol symbol}) as-lower)))
+  (query-scalar ds (latest-fundamentals-sqlvec {:symbol symbol}) :data))
 
 (defn latest-news [ds symbol limit]
   (jdbc/execute! ds (latest-news-sqlvec {:symbol symbol :limit limit}) as-lower))
