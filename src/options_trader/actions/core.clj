@@ -1,7 +1,6 @@
 (ns options-trader.actions.core
-  "Action handler dispatch for the options-trader system.
-   An action is a user- or system-initiated intent (e.g. :place-order,
-   :cancel-order, :run-screen) routed through handle-action.")
+  "Action dispatch. Concrete handlers register via defmethod on handle-action;
+   every user/system intent funnels through here.")
 
 (defmulti handle-action
   "Route an action map to the appropriate handler fn by its :type key.

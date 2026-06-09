@@ -8,7 +8,6 @@
   (:import [java.time LocalDateTime]
            [java.time.format DateTimeFormatter]))
 
-;;; ── Lexicon-based sentiment ─────────────────────────────────────────────────
 
 (def ^:private lexicon
   (delay (util/read-edn-resource "sentiment-lexicon.edn")))

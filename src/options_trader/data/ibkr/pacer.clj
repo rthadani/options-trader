@@ -11,7 +11,6 @@
 (def ^:const hist-window-ms   (* 10 60 1000)) ; 10 minutes in milliseconds
 (def ^:const hist-window-max  60)             ; max historical requests per window
 
-;;; ── Factory ──────────────────────────────────────────────────────────────────
 
 (defn create-pacer
   "Return a new opaque pacer instance.
@@ -29,7 +28,6 @@
 
 (defonce default-pacer (create-pacer))
 
-;;; ── Token-bucket internals ───────────────────────────────────────────────────
 
 (defn- refill [state]
   (let [now       (System/currentTimeMillis)
@@ -38,7 +36,6 @@
                        (+ (:tokens state) (* (:rate state) elapsed-s)))]
     (assoc state :tokens new-tok :last-ms now)))
 
-;;; ── Core API (pacer-first) ───────────────────────────────────────────────────
 
 (defn acquire!
   "Consume one token from pacer.
@@ -91,7 +88,6 @@
     :tokens      (long (:tokens @(:bucket pacer)))})
   ([] (stats default-pacer)))
 
-;;; ── Historical-data sliding window ───────────────────────────────────────────
 
 (defn prune-window
   "Remove timestamps older than hist-window-ms from now."
@@ -151,7 +147,6 @@
          (> (System/currentTimeMillis) deadline)         false
          :else (do (Thread/sleep (long poll-ms)) (recur)))))))
 
-;;; ── Test helpers ─────────────────────────────────────────────────────────────
 
 (defn set-tokens!
   "Override token count in pacer. Updates last-ms to prevent immediate refill.

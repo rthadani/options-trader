@@ -3,7 +3,6 @@
             [clojure.string :as str]
             [options-trader.tui.llm :as llm]))
 
-;;; ── Model registry ────────────────────────────────────────────────────────
 
 ;; One :each fixture — a second use-fixtures call would replace this one rather
 ;; than compose. Restores the global model/provider atoms and isolates the
@@ -35,7 +34,6 @@
   (is (thrown? clojure.lang.ExceptionInfo (llm/set-model! "   ")))
   (is (thrown? clojure.lang.ExceptionInfo (llm/set-model! nil))))
 
-;;; ── spawn-claude reads from the registry ──────────────────────────────────
 
 (deftest spawn-claude-uses-active-model-when-none-supplied
   (llm/set-model! "claude-test-model")
@@ -58,7 +56,6 @@
   (let [{:keys [cmd]} (llm/spawn-claude {})]
     (is (not-any? #{"--resume"} cmd))))
 
-;;; ── ask-in-scope: auto-resume + auto-capture ───────────────────────────────
 
 (def ^:private sample-claude-stdout
   (str
@@ -120,7 +117,6 @@
       (is (= 2    (:turn-count s))))
     (clojure.java.io/delete-file path :silently)))
 
-;;; ── complete / complete-json (synchronous delegation) ─────────────────────
 
 (deftest complete-shells-out-to-claude-print
   (let [captured (atom nil)
@@ -192,7 +188,6 @@
   (is (true?  (llm/rate-limited? "Claude usage limit reached. Tokens will renew at 5pm.")))
   (is (false? (llm/rate-limited? "all good"))))
 
-;;; ── Provider dispatch (mirrors morpheus.executor.llm) ──────────────────────
 
 (deftest set-provider!-validates-and-updates
   (is (= :kimi   (llm/set-provider! "kimi")))

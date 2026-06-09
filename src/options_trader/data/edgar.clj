@@ -1,13 +1,8 @@
 (ns options-trader.data.edgar
-  "SEC EDGAR data ingestion backed by clojure-finance/edgarjure (edgar.api).
-   Config key: :data-sources/:edgar
-   Protocol:   IEdgarSource — pluggable backend contract.
-
-   The edgarjure-backed source requires a SEC User-Agent (\"Name email\").
-   Supply it via :user-agent on the source config, or set EDGAR_USER_AGENT
-   in the environment. Without a configured User-Agent the namespace falls
-   back to UnavailableEdgarSource and every call returns :unavailable —
-   no network traffic is issued at namespace load."
+  "SEC EDGAR via edgarjure. Requires a User-Agent (\"Name email\") supplied
+   on the source config as :user-agent or via EDGAR_USER_AGENT; without
+   one the namespace falls back to UnavailableEdgarSource and every call
+   returns :unavailable."
   (:require [cheshire.core :as json]
             [clojure.string :as str]
             [edgar.api :as e]
@@ -15,7 +10,6 @@
             [options-trader.util :as util]
             [taoensso.timbre :as log]))
 
-;;; ── Protocol ────────────────────────────────────────────────────────────────
 
 (defprotocol IEdgarSource
   "Pluggable source contract for SEC EDGAR filings and metadata.
@@ -40,7 +34,6 @@
   (supported-forms [this]
     "Return the set of SEC form types this source supports, or :all."))
 
-;;; ── Unavailable stub ───────────────────────────────────────────────────────
 
 (deftype UnavailableEdgarSource []
   IEdgarSource
@@ -53,7 +46,6 @@
 
 (def ^:private unavailable-source (UnavailableEdgarSource.))
 
-;;; ── Edgarjure-backed implementation ────────────────────────────────────────
 
 (defn- ->canonical-filing
   "Map an edgarjure filing record to the canonical schema used by the
@@ -123,7 +115,6 @@
     (->canonical-filing (:symbol raw) raw))
   (supported-forms [_] :all))
 
-;;; ── init! gating ────────────────────────────────────────────────────────────
 
 (defonce ^:private init-once! (atom nil))
 
@@ -134,7 +125,6 @@
   (when (compare-and-set! init-once! nil user-agent)
     (e/init! user-agent)))
 
-;;; ── Dispatch ────────────────────────────────────────────────────────────────
 
 ;; fetch-filings serves from the cache table; body / item / facts have
 ;; no cache (the `filings.data` JSON column carries index metadata only)
@@ -200,7 +190,6 @@
 (defmethod make-source :duckdb-cache [{:keys [ds fallback]}]
   (->DuckDbEdgarSource ds fallback))
 
-;;; ── Default-source resolution ──────────────────────────────────────────────
 
 (defonce ^:private default-source-holder (atom nil))
 
@@ -232,7 +221,6 @@
         (reset! default-source-holder s))
       unavailable-source))
 
-;;; ── Public API (delegates to configured source) ─────────────────────────────
 
 (defn fetch-edgar-filings
   "Fetch EDGAR filings for symbol. Returns a seq of canonical filing maps

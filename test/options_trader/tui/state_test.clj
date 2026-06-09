@@ -4,7 +4,6 @@
 
 (use-fixtures :each (fn [f] (st/reset-state!) (f) (st/reset-state!)))
 
-;;; ── Stream-driven portfolio upserts ───────────────────────────────────────
 
 (deftest upsert-position-matches-by-conid-when-present
   (st/set-portfolio! {:positions [{:conid 1 :symbol "AAPL" :qty 100 :market-value 17500}]
@@ -61,7 +60,6 @@
   (st/append-activity! :thinking "pondering")
   (is (= [{:role :tool :text "run_sql"} {:role :thinking :text "pondering"}]
          (:activity @st/state))))
-;;; ── /compact prefix queue ────────────────────────────────────────────────
 
 (deftest take-prefix-returns-nil-when-empty
   (is (nil? (st/take-prefix-message!))))

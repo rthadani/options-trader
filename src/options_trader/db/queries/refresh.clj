@@ -16,7 +16,6 @@
 ;; -- :name in resources/sql/refresh.sql. Each returns [sql & params].
 (hugsql/def-sqlvec-fns "sql/refresh.sql")
 
-;;; ── refresh_log ─────────────────────────────────────────────────────
 
 (defn next-refresh-log-id [ds]
   (query-scalar ds (next-refresh-log-id-sqlvec) :n))
@@ -31,7 +30,6 @@
                           {:id id :status status :error error
                            :finished-at finished-at})))
 
-;;; ── Internal helpers ────────────────────────────────────────────────
 
 (defn- execute-batch! [ds sqlvec rows]
   (when (seq rows)
@@ -39,7 +37,6 @@
       (jdbc/execute-batch! ds sql rows {})))
   (count rows))
 
-;;; ── bars_daily ──────────────────────────────────────────────────────
 
 (defn latest-bar-date [ds symbol]
   (query-scalar ds (latest-bar-date-sqlvec {:symbol symbol}) :d))
@@ -47,7 +44,6 @@
 (defn insert-bars-daily-batch! [ds rows]
   (execute-batch! ds (insert-bars-daily-batch-sqlvec) rows))
 
-;;; ── bars_intraday ───────────────────────────────────────────────────
 
 (defn latest-intraday-ts [ds symbol bar-size]
   (query-scalar ds (latest-intraday-ts-sqlvec {:symbol symbol :bar-size bar-size}) :t))
@@ -55,7 +51,6 @@
 (defn insert-bars-intraday-batch! [ds rows]
   (execute-batch! ds (insert-bars-intraday-batch-sqlvec) rows))
 
-;;; ── news ────────────────────────────────────────────────────────────
 
 (defn latest-news-published [ds symbol]
   (query-scalar ds (latest-news-published-sqlvec {:symbol symbol}) :t))
@@ -63,7 +58,6 @@
 (defn insert-news-batch! [ds rows]
   (execute-batch! ds (insert-news-batch-sqlvec) rows))
 
-;;; ── filings ─────────────────────────────────────────────────────────
 
 (defn latest-filing-date [ds symbol]
   (query-scalar ds (latest-filing-date-sqlvec {:symbol symbol}) :d))
@@ -71,7 +65,6 @@
 (defn insert-filings-batch! [ds rows]
   (execute-batch! ds (insert-filings-batch-sqlvec) rows))
 
-;;; ── universes ───────────────────────────────────────────────────────
 
 (defn current-members [ds universe]
   (->> (jdbc/execute! ds (select-universe-members-sqlvec {:universe universe}) as-lower)
@@ -96,7 +89,6 @@
   (jdbc/execute-one! ds (delete-universe-member-sqlvec
                           {:universe universe :symbol symbol})))
 
-;;; ── iv_daily ─────────────────────────────────────────────────────────
 
 (defn latest-iv-date [ds symbol]
   (query-scalar ds (latest-iv-date-sqlvec {:symbol symbol}) :d))
@@ -106,12 +98,10 @@
     (upsert-iv-row-sqlvec {:symbol symbol :iv-date iv-date
                             :iv30 iv30 :hv30 hv30})))
 
-;;; ── short_interest ───────────────────────────────────────────────────
 
 (defn upsert-short-interest! [ds row]
   (jdbc/execute-one! ds (upsert-short-interest-sqlvec row)))
 
-;;; ── earnings ─────────────────────────────────────────────────────────
 
 (defn upsert-earnings-event! [ds row]
   (jdbc/execute-one! ds (upsert-earnings-event-sqlvec row)))

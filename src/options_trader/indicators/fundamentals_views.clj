@@ -1,18 +1,12 @@
 (ns options-trader.indicators.fundamentals-views
-  "EDGAR-backed fundamentals surfaced as columns on latest_indicators, with
-   the full canonical map persisted to the fundamentals table.
-
-   For each symbol in bars_daily: fetch + normalise via the configured EDGAR
-   fundamentals source, join against the latest close from bars_daily for
-   ratios that need price (P/E, FCF yield), then upsert the ratio columns
-   onto latest_indicators. Symbols not in EDGAR (foreign ADRs, most ETFs)
-   are skipped with a warning."
+  "EDGAR fundamentals → ratio columns on latest_indicators, with the full
+   canonical map persisted to the fundamentals table. Symbols EDGAR can't
+   resolve (foreign ADRs, most ETFs) are skipped with a warning."
   (:require [cheshire.core                    :as json]
             [taoensso.timbre                  :as log]
             [options-trader.data.fundamentals :as fund]
             [options-trader.db.queries.indicators :as q]))
 
-;;; ── Schema ──────────────────────────────────────────────────────────────────
 
 (def ^:private columns
   [:pe_ratio :earnings_yield :price_to_book :fcf_yield :ocf_yield
@@ -22,7 +16,6 @@
 (defn ensure-schema! [ds]
   (q/ensure-double-columns! ds columns))
 
-;;; ── Helpers ─────────────────────────────────────────────────────────────────
 
 (defn- div [a b]
   (when (and (number? a) (number? b) (not (zero? b)))
@@ -65,7 +58,6 @@
      :net_income_growth_yoy (growth net-income    (:net-income    prior))
      :eps_growth_yoy        (growth eps-diluted   (:eps-diluted   prior))}))
 
-;;; ── DB I/O ──────────────────────────────────────────────────────────────────
 
 (defn- latest-close   [ds sym] (q/latest-close ds sym))
 
@@ -76,7 +68,6 @@
 (defn- upsert-row! [ds sym values]
   (q/upsert-latest-row! ds sym (into {} (remove (comp nil? val) values))))
 
-;;; ── Public entry point ──────────────────────────────────────────────────────
 
 (defn refresh-fundamentals-views!
   "Fetch fundamentals for symbols via the EDGAR source, persist the canonical

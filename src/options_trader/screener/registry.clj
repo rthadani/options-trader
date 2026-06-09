@@ -18,7 +18,6 @@
 (def ^:const default-source :cache)
 (def ^:const built-in-sources #{:ibkr :cache :static :edgar})
 
-;;; ── Hash helper ─────────────────────────────────────────────────────────────
 
 (defn- sha256-hex [^String s]
   (when (and s (seq s))
@@ -26,7 +25,6 @@
           bs (.digest md (.getBytes s "UTF-8"))]
       (apply str (map #(format "%02x" %) bs)))))
 
-;;; ── Screen-file helpers ──────────────────────────────────────────────────────
 
 (defn- parse-screen-file
   "Parse YAML front-matter + SQL body from a .screen file string.
@@ -72,7 +70,6 @@
   ^java.io.File [screen-name]
   (io/file (screen-dir) (str (str/replace screen-name #"\s+" "-") ".screen")))
 
-;;; ── DB helpers ───────────────────────────────────────────────────────────────
 
 (defn- row->screen [row]
   (when row
@@ -93,7 +90,6 @@
 (def ^:private screen-cols
   "SELECT id, name, universe, criteria, description_hash, cached_sql, created_at, updated_at FROM screens")
 
-;;; ── Public API ───────────────────────────────────────────────────────────────
 
 (defn list-screens
   "Return a vector of all screen maps from the screens table."
@@ -203,7 +199,6 @@
              :else        {:error (:error r) :results []}))))
      {:error (str "screen not found: " id-or-name) :results []})))
 
-;;; ── File watcher ─────────────────────────────────────────────────────────────
 
 (defn- load-screen-file!
   "Parse a .screen file and upsert it into the DB.

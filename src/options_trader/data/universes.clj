@@ -20,7 +20,6 @@
             [org.httpkit.client :as http]
             [net.cgrand.enlive-html :as html]))
 
-;;; ── Config loading ──────────────────────────────────────────────────────────
 
 (defn- load-edn [resource-path]
   (when-let [r (io/resource resource-path)]
@@ -32,7 +31,6 @@
 (def ^:private symbol-rules
   (delay (load-edn "universes/symbol-rules.edn")))
 
-;;; ── HTML parsing ────────────────────────────────────────────────────────────
 
 (defn- header-text
   "Concatenated text of a <table>'s header row (first <tr>). Used as a
@@ -86,7 +84,6 @@
   "Alias for extract-tickers (back-compat)."
   extract-tickers)
 
-;;; ── Symbol normalisation ────────────────────────────────────────────────────
 
 (defn normalise-symbol
   "Apply normalisation rules to a single raw ticker string.
@@ -117,7 +114,6 @@
   "Alias for normalise-symbols (American spelling, back-compat)."
   normalise-symbols)
 
-;;; ── HTTP fetch ──────────────────────────────────────────────────────────────
 
 (defn fetch-html
   "Fetch raw HTML from url. Returns HTML string or :unavailable on error.
@@ -149,7 +145,6 @@
            (extract-tickers col-idx {:header-contains header-contains})
            normalise-symbols)))))
 
-;;; ── Source-config API ───────────────────────────────────────────────────────
 
 (defn- extract-static-symbols
   "Coerce a user-universe file's contents into a normalised symbol vector,
@@ -206,34 +201,22 @@
                                {:timeout-ms      timeout-ms
                                 :header-contains (:header-contains cfg)})))))
 
-(defn ticker-fetch
-  "Alias for fetch-source — delegates by source key."
-  [source-key]
+(defn ticker-fetch [source-key]
   (fetch-source source-key))
 
-(defn fetch-sp500
-  "Fetch S&P 500 tickers from Wikipedia. Returns normalised vector or :unavailable."
-  []
-  (fetch-source :sp500))
+(defn fetch-sp500     [] (fetch-source :sp500))
+(defn fetch-nasdaq100 [] (fetch-source :nasdaq100))
 
-(defn fetch-nasdaq100
-  "Fetch Nasdaq-100 tickers from Wikipedia. Returns normalised vector or :unavailable."
-  []
-  (fetch-source :nasdaq100))
-
-(defn all-source-keys
-  "Every source the refresh path knows about — built-in fetched +
-   user-defined static. Used as the default source list when nothing
-   else is specified."
-  []
+;; Built-in fetched + user-defined static. Default source list when the
+;; refresh isn't given an explicit subset.
+(defn all-source-keys []
   (-> (set (keys @sources))
       (into (keys (load-user-universes)))
       sort
       vec))
 
 (defn fetch-all
-  "Fetch and merge tickers from all known sources (built-in + user).
-   Skips any source that returns :unavailable."
+  "Merge tickers across every known source. Skips :unavailable."
   []
   (->> (all-source-keys)
        (map fetch-source)
@@ -242,7 +225,6 @@
        distinct
        vec))
 
-;;; ── Seeding scaffold (Phase 3 placeholder) ──────────────────────────────────
 
 (defn seed-builtins!
   "Seed built-in universes into the DuckDB layer.

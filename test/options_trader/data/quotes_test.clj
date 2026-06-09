@@ -4,7 +4,6 @@
             [options-trader.data.market-data :as md]
             [options-trader.data.quotes :as quotes]))
 
-;;; ── Test fixture DB ───────────────────────────────────────────────────────
 
 (defn- mem-conn
   "DuckDB in-memory databases are scoped to a single JDBC Connection, so the
@@ -29,7 +28,6 @@
   (doseq [[sym oi vol] rows]
     (jdbc/execute! ds ["INSERT INTO latest_indicators VALUES (?, ?, ?)" sym oi vol])))
 
-;;; ── avg-volume ────────────────────────────────────────────────────────────
 
 (deftest avg-volume-uses-last-N-days
   (let [ds (mem-conn)]
@@ -48,7 +46,6 @@
     (prep-bars! ds [["AAPL" "2026-05-20" 1000]])
     (is (nil? (quotes/avg-volume ds "NOPE" 14)))))
 
-;;; ── pc-ratios ─────────────────────────────────────────────────────────────
 
 (deftest pc-ratios-found
   (let [ds (mem-conn)]
@@ -62,7 +59,6 @@
     (is (= {:pc-oi-ratio nil :pc-vol-ratio nil}
            (quotes/pc-ratios ds "NOPE")))))
 
-;;; ── detailed-quote (assembly with mock source) ────────────────────────────
 
 (deftest detailed-quote-merges-source-and-db
   (let [ds  (mem-conn)
@@ -100,7 +96,6 @@
     (prep-indicators! ds [])
     (is (= :unavailable (quotes/detailed-quote src ds "AAPL")))))
 
-;;; ── option-quote / calc-option-greeks (delegate to source) ────────────────
 
 (deftest option-quote-delegates-to-stream-opt
   (let [src (md/make-mock-source

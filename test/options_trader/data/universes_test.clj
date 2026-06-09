@@ -6,13 +6,11 @@
             [clojure.set :as set]
             [options-trader.data.universes :as u]))
 
-;;; ── Fixture loading (pure, no network) ─────────────────────────────────────
 
 (def ^:private fixture-html
   "Lazily loaded S&P 500 Wikipedia fixture (HTML string)."
   (delay (slurp (io/resource "fixtures/sp500.html"))))
 
-;;; ── extract-tickers tests ───────────────────────────────────────────────────
 
 (deftest extract-tickers-basic-test
   (testing "extracts raw tickers from wikitable fixture"
@@ -40,7 +38,6 @@
       (is (some #{"BRK.B"} tickers)
           "reader path must include BRK.B"))))
 
-;;; ── normalise-symbol unit table ─────────────────────────────────────────────
 
 (deftest normalise-symbol-unit-test
   (testing "dot replacements"
@@ -70,7 +67,6 @@
     (is (= "AAPL" (u/normalise-symbol " AAPL "))
         "leading/trailing whitespace must be trimmed")))
 
-;;; ── Full pipeline integration (no HTTP) ─────────────────────────────────────
 
 (deftest normalise-symbols-pipeline-test
   (testing "extract + normalise pipeline on S&P 500 fixture"
@@ -85,14 +81,12 @@
       (is (some #{"AAPL"} normalised)
           "common ticker AAPL must survive normalisation"))))
 
-;;; ── seed-builtins! guard ────────────────────────────────────────────────────
 
 (deftest seed-builtins-placeholder-test
   (testing "seed-builtins! throws until Phase 3"
     (is (thrown? UnsupportedOperationException (u/seed-builtins!))
         "seed-builtins! must throw UnsupportedOperationException in Phase 2")))
 
-;;; ── User-defined static universes ───────────────────────────────────────────
 
 (defn- write-tmp-universe! [^java.io.File dir name content]
   (.mkdirs dir)

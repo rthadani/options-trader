@@ -1,17 +1,14 @@
 (ns options-trader.indicators.runner
-  "ta4j-driven indicator runner: reads resources/indicators.edn, computes per-symbol
-   latest values for all declared single-series indicators, and upserts into
-   latest_indicators.  Called at the top of engine/refresh-derived-indicators! so
-   persistent ta4j columns are populated before any SQL-only slice can COALESCE
-   against them."
+  "ta4j-driven runner. Reads indicators.edn, computes per-symbol latest
+   values, upserts to latest_indicators. Runs first in
+   engine/refresh-derived-indicators! so SQL slices can COALESCE against
+   the ta4j columns."
   (:require [options-trader.db.queries.indicators :as q]
             [options-trader.indicators.ta4j :as ta4j]
             [options-trader.util :as util]
             [taoensso.timbre :as log]))
 
-;;; ── Bar loading ─────────────────────────────────────────────────────────────
 
-;;; ── Indicator computation ───────────────────────────────────────────────────
 
 (defn- safe-last-value
   "Extract the double value at the last bar index; returns nil on NaN/Infinite/error."
@@ -39,7 +36,6 @@
         (log/warn "runner: error computing" kind "column" column "-" (.getMessage e))
         nil))))
 
-;;; ── Schema management ───────────────────────────────────────────────────────
 
 (defn- load-config []
   (util/read-edn-resource "indicators.edn"))
@@ -53,7 +49,6 @@
 
 
 
-;;; ── Public API ──────────────────────────────────────────────────────────────
 
 (defn- compute-symbol-values
   "Pure compute step: load bars + run every spec, return [sym values] or nil

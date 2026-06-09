@@ -1,21 +1,10 @@
 (ns options-trader.tui.markdown
-  "Lightweight markdown to ANSI renderer for the TUI chat area.
-
-   Handles the patterns LLM responses actually use:
-     # / ## / ### headers    -> bold + visual underline
-     **bold**                -> ANSI bold
-     *italic* / _italic_     -> ANSI italic
-     `code`                  -> dim yellow
-     ``` fenced code ```     -> dim block, indented
-     | table | rows |        -> column-aligned grid with rule lines
-     - / * / 1. lists        -> indented bullets
-
-   Returns a vector of pre-wrapped strings (each <= width chars of VISIBLE
-   content, but may contain ANSI escapes that don't count toward visible
-   width). Hand this directly to the chat line-list."
+  "Markdown → ANSI for the chat area. Covers headers, bold, italic, inline
+   code, fenced blocks, tables, and bullet lists — the patterns LLM
+   responses actually use. Returns a vec of pre-wrapped strings sized to
+   `width` visible chars (ANSI escapes don't count)."
   (:require [clojure.string :as str]))
 
-;;; ── ANSI helpers ──────────────────────────────────────────────────────────
 
 (def ^:private ESC "")
 (defn- ansi [code] (str ESC "[" code "m"))
@@ -37,7 +26,6 @@
   (let [v (visible-length s)]
     (if (>= v n) s (str s (apply str (repeat (- n v) \space))))))
 
-;;; ── Inline formatting ─────────────────────────────────────────────────────
 
 (defn- apply-inline
   "Apply `code`, **bold**, *italic*/_italic_ to a single line.
@@ -55,7 +43,6 @@
       (str/replace #"(?:^|(?<=\s))_(\S(?:[^_])*?\S|\S)_(?=\s|$|[.,;:!?])"
                    (str ITALIC "$1" RESET))))
 
-;;; ── Visible-width-aware wrap ──────────────────────────────────────────────
 
 (defn- wrap-line [^String s width]
   (if (<= (visible-length s) width)
@@ -76,7 +63,6 @@
         :else
         (recur (rest words) (first words) (conj acc current))))))
 
-;;; ── Tables ────────────────────────────────────────────────────────────────
 
 (defn- table-row? [line]
   (and (string? line) (re-matches #"\s*\|.+\|\s*" line)))
@@ -125,7 +111,6 @@
             (map #(fmt-row % false) (rest rows))
             [(str DIM bot-rule RESET)])))
 
-;;; ── Block-level dispatch ──────────────────────────────────────────────────
 
 (defn- header-line? [line] (re-find #"^#{1,6}\s+" line))
 (defn- fence-line?  [line] (re-find #"^```" line))

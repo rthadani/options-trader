@@ -9,7 +9,6 @@
             [options-trader.test-util :as tu])
   (:import [java.sql Date]))
 
-;;; ── Tests ────────────────────────────────────────────────────────────────────
 
 (deftest compute-many-upserts-latest-indicators-test
   (testing "compute-many populates latest_indicators with correct values"
@@ -75,7 +74,6 @@
           (is (<= 0.0 pct 1.0)
               (str "atr_14_percentile_126d expected in [0,1], got " pct)))))))
 
-;;; ── Composite unit tests ─────────────────────────────────────────────────────
 
 (deftest ttm-squeeze-flag-unit-test
   (testing "ttm_squeeze_flag=true when BB sits inside KC"

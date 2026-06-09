@@ -1,18 +1,12 @@
 (ns options-trader.tui.llm
-  "LLM calls for the TUI. Mirrors morpheus.executor.llm: every provider shells
-   out to the claude CLI; non-Anthropic providers just override env vars to
-   point it at an Anthropic-compatible endpoint.
-     :claude  (default) — api.anthropic.com (cached login / ANTHROPIC_API_KEY)
-     :ollama            — `ollama launch claude` (auto-pulls model)
-     :kimi              — api.moonshot.ai/anthropic   (reads MOONSHOT_API_KEY)
-     :minimax           — api.minimax.chat/anthropic  (reads MINIMAX_API_KEY)
-   complete/complete-json dispatch on :provider; the streaming spawn (ask /
-   ask-in-scope) routes the same way via the spawned process's env.
+  "LLM calls for the TUI. Every provider shells out to the claude CLI;
+   non-Anthropic providers (kimi, minimax, ollama) override env vars to
+   point it at their Anthropic-compatible endpoint. complete/complete-json
+   and the streaming spawn (ask / ask-in-scope) all dispatch on :provider.
 
-   For all providers that shell out to `claude`, we inject CLAUDE_CONFIG_DIR
-   pointing at <paths/runtime-claude-dir> so the agent's settings, agents,
-   skills, slash-commands and session history are fully isolated from the
-   host machine's ~/.claude."
+   CLAUDE_CONFIG_DIR is always pinned to paths/runtime-claude-dir so the
+   spawned agent's settings, agents, skills, and sessions stay isolated
+   from the host's ~/.claude."
   (:require [cheshire.core                   :as json]
             [clojure.java.shell              :as shell]
             [clojure.string                  :as str]
@@ -56,7 +50,6 @@
     (reset! active-agent k)
     k))
 
-;;; ── Anthropic-compatible env (non-Anthropic providers) ─────────────────────
 
 (def ^:private provider-endpoints
   {:kimi    {:base-url "https://api.moonshot.ai/anthropic"  :key-env "MOONSHOT_API_KEY"}
@@ -100,7 +93,6 @@
                "CLAUDE_CONFIG_DIR"              (paths/runtime-claude-dir)
                "ENABLE_TOOL_SEARCH"             "false"))))
 
-;;; ── Streaming spawn (the in-session agent) ─────────────────────────────────
 
 (defn streaming-invocation
   "Build {:cmd :env} for a streaming `claude` run routed to `provider`.
@@ -153,7 +145,6 @@
       (conv/persist-claude-sessions! (or persist-path conv/default-persist-path)))
     (assoc result :session-id sid :usage usage :scope-key scope-key)))
 
-;;; ── Rate-limit detection ───────────────────────────────────────────────────
 
 (def rate-limit-signals
   #{"rate_limit_error" "overloaded_error" "429" "too many requests"
@@ -181,7 +172,6 @@
                        :exit exit :stderr err}))
       (throw (ex-info tag {:exit exit :stderr err})))))
 
-;;; ── Synchronous one-shot delegation (`claude --print`) ─────────────────────
 
 (defn- with-system [system prompt]
   (if (seq system) (str system "\n\n---\n\n" prompt) prompt))

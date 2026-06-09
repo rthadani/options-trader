@@ -31,7 +31,6 @@
   (let [spec (spawn-claude (or params {}))]
     (spawn-fn (assoc spec :input (or message "")))))
 
-;;; ── Stream-json parsing ─────────────────────────────────────────────────────
 
 (defn- parse-jsonl-events
   "Parse the stream-json stdout into a seq of event maps, dropping any line

@@ -1,15 +1,11 @@
 (ns options-trader.indicators.sector-metrics-test
-  "Tests for sector-relative valuation metrics.
-   Covers: happy-path quartiles and percent_rank (3 sectors × 4 symbols),
-   missing sector_map → NULL columns, missing fundamentals → NULL columns,
-   single-symbol sector edge case, and idempotency."
+  "Tests for sector-relative valuation metrics."
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
             [options-trader.db.duckdb :as db]
             [options-trader.indicators.sector-metrics :as sm]
             [options-trader.test-util :as tu]))
 
-;;; ── Seed helpers ─────────────────────────────────────────────────────────────
 
 (defn- seed-sector! [ds sym sector]
   (jdbc/execute! ds
@@ -34,7 +30,6 @@
 (defn- approx= [a b]
   (< (Math/abs (- (double a) (double b))) 0.001))
 
-;;; ── Tests ────────────────────────────────────────────────────────────────────
 
 (deftest happy-path-test
   (testing "3 sectors × 4 symbols: hand-computed quartiles and percent_rank"

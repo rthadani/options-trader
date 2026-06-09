@@ -21,7 +21,6 @@
              (finally
                (try (.delete ^java.io.File (:_file cfg)) (catch Throwable _))))))))
 
-;;; ── duration-for-gap ───────────────────────────────────────────────────────
 
 (deftest duration-for-gap-first-fetch-is-5-years
   (is (= "5 Y" (refresh/duration-for-gap nil))))
@@ -41,7 +40,6 @@
 (deftest duration-for-gap-very-old
   (is (= "1 Y" (refresh/duration-for-gap (.minusDays (LocalDate/now) 300)))))
 
-;;; ── latest-bar-date returns the persisted max ──────────────────────────────
 
 (deftest latest-bar-date-returns-nil-when-empty
   (is (nil? (refresh/latest-bar-date *ds* "AAPL"))))
@@ -55,7 +53,6 @@
      (LocalDate/of 2025 5 5)])
   (is (= (LocalDate/of 2025 5 5) (refresh/latest-bar-date *ds* "AAPL"))))
 
-;;; ── intraday-duration-for-gap by bar-size ──────────────────────────────────
 
 (deftest intraday-duration-first-fetch-by-bar-size
   (is (= "2 D"  (refresh/intraday-duration-for-gap nil "1 min")))
@@ -67,7 +64,6 @@
   (let [recent (Timestamp. (System/currentTimeMillis))]
     (is (= "1 D" (refresh/intraday-duration-for-gap recent "15 mins")))))
 
-;;; ── news-start-date-for-gap ────────────────────────────────────────────────
 
 (deftest news-start-date-default-is-30-days
   (let [s (refresh/news-start-date-for-gap nil)]
@@ -78,7 +74,6 @@
         s  (refresh/news-start-date-for-gap ts)]
     (is (re-matches #"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.0" s))))
 
-;;; ── refresh_log writes start + finish rows via with-log ────────────────────
 
 (defn- log-row-count [ds]
   (-> (jdbc/execute-one! ds ["SELECT COUNT(*) AS n FROM refresh_log"] as-lower) :n))
@@ -92,7 +87,6 @@
     (is (= "fundamentals" (:task row)))
     (is (= "ok" (:status row)))))
 
-;;; ── refresh-bars-daily incremental + self-healing ──────────────────────────
 
 (defn- fake-bars [days-back symbol]
   (let [today (LocalDate/now)]

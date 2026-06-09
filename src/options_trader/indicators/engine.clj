@@ -27,7 +27,6 @@
     (edn/read-string
       (slurp (if (.exists user) user (io/resource "indicators.edn"))))))
 
-;;; ── Bar loading ─────────────────────────────────────────────────────────────
 
 (defn load-bars
   "Load bars_daily rows for symbol from ds, sorted ascending by date.
@@ -36,7 +35,6 @@
   [ds symbol]
   (ta4j/load-bars ds symbol))
 
-;;; ── Indicator construction ──────────────────────────────────────────────────
 
 (def ^:private indicator-builders
   "Map of indicator :kind keyword to a fn taking [series params] and returning
@@ -95,7 +93,6 @@
       (throw (ex-info (str "Unknown indicator kind: " (name kind))
                       {:kind kind})))))
 
-;;; ── Indicator dispatch ──────────────────────────────────────────────────────
 
 (defn compute-one
   "Compute the last value of indicator-spec on a ta4j BarSeries.
@@ -103,9 +100,7 @@
   [series spec]
   (ta4j/indicator-value (build-indicator series spec) (dec (ta4j/bar-count series))))
 
-;;; ── Composite computation ───────────────────────────────────────────────────
 
-;;; ── Cross-direction detection ────────────────────────────────────────────────
 
 (defn- cross-direction
   "Given prev value and curr value, return :bullish if crossing above zero,
@@ -119,7 +114,6 @@
 (defn- sma-of-values [vals n-days]
   (/ (apply + vals) n-days))
 
-;;; ── Composite computations ──────────────────────────────────────────────────
 
 (defn- compute-ttm-squeeze [values]
   (let [{:keys [bb_upper bb_lower kc_upper kc_lower]} values]
@@ -205,7 +199,6 @@
     (throw (ex-info (str "Unknown composite kind: " (name (:kind spec)))
                     {:kind (:kind spec)}))))
 
-;;; ── Schema helpers ──────────────────────────────────────────────────────────
 
 (defn- ensure-column! [ds col-kw]
   (q/ensure-double-columns! ds [col-kw]))
@@ -218,20 +211,17 @@
 
 
 
-;;; ── History persistence ─────────────────────────────────────────────────────
 
 (defn- insert-history! [ds symbol indicator-key ind-date value]
   (q/insert-indicator-history!
     ds {:symbol symbol :indicator indicator-key
         :ind-date ind-date :value value}))
 
-;;; ── Percentile rank ─────────────────────────────────────────────────────────
 
 (defn- compute-percentile! [ds symbol indicator-key n-days]
   (q/percent-rank-latest
     ds {:symbol symbol :indicator indicator-key :n-days n-days}))
 
-;;; ── Public entry point ──────────────────────────────────────────────────────
 
 (defn compute-many
   "Compute all indicators from resources/indicators.edn for symbol and upsert

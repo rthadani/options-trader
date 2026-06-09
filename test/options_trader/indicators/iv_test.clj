@@ -1,7 +1,6 @@
 (ns options-trader.indicators.iv-test
-  "Fixture-driven tests for IV/HV derived indicators.
-   Verifies iv_rank, iv_percentile, hv_rank, hv_percentile,
-   iv_minus_hv, and iv_rank_window_used against hand-computed expectations."
+  "Tests for IV/HV derived indicator columns. Expected values are
+   hand-computed in each deftest's comment."
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
             [options-trader.db.duckdb :as db]
@@ -22,7 +21,6 @@
           ["INSERT INTO iv_daily (symbol, iv_date, iv30, hv30) VALUES (?, ?, ?, ?)"
            sym (Date/valueOf dt) iv30 hv30])))))
 
-;;; ── Tests ────────────────────────────────────────────────────────────────────
 
 (deftest all-windows-fill-test
   (testing "symbol with 300 rows: all three windows non-null, hand-computed ranks = 100.0"

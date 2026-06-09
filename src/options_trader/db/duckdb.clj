@@ -20,7 +20,6 @@
 (defmethod build-query :default [spec]
   {:error :unknown-query-key :query-key (:query-key spec)})
 
-;;; ── Constants ────────────────────────────────────────────────────────────────
 
 (def ^:const schema-version
   "Current DuckDB schema version. Increment when applying new migrations."
@@ -32,7 +31,6 @@
 
 (def as-lower {:builder-fn rs/as-unqualified-lower-maps})
 
-;;; ── Internal helpers ─────────────────────────────────────────────────────────
 
 (defn- jdbc-url [{:keys [db]}]
   (let [path (get db :path db-path)]
@@ -61,7 +59,6 @@
            (sort-by #(.getName %))
            vec))))
 
-;;; ── Public API ───────────────────────────────────────────────────────────────
 
 (defn datasource
   "Return a next.jdbc datasource backed by org.duckdb.DuckDBDriver.

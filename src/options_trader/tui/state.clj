@@ -35,22 +35,13 @@
    :prefix-message   nil
    :profile          nil
    :ibkr-config      nil
-   ;; ── Terminal dims, refreshed on WINCH ──────────────────────────────────
    :width            80
    :height           24
-   ;; Watchlist — user-curated live quotes, separate from held positions
-   ;; and the active investigation symbol. Stream subs are tagged
-   ;; :watchlist in the sub manager so the budget is auditable.
-   :watchlist        []   ;; ordered seq of upper-cased symbol strings
-   :watchlist-quotes {}   ;; sym → {:last :bid :ask :bid-size :ask-size
-                          ;;        :volume :avg-volume :updated-at}
-   :watchlist-subs   {}   ;; sym → req-id (for cancel on remove)
-   ;; Scroll offsets for the portfolio + watchlist panes. Tab cycles
-   ;; focus through :input → :chat → :portfolio → :watchlist; PageUp/
-   ;; PageDown act on whichever pane is currently focused.
+   :watchlist        []
+   :watchlist-quotes {}
+   :watchlist-subs   {}
    :portfolio-offset 0
    :watchlist-offset 0
-   ;; ── IB streaming bookkeeping (moved here from scattered defonces) ──────
    :stream {:pnl-rid          nil
             :pnl-single-rids  {}              ;; conid → req-id
             :counters         {:update-portfolio      0
@@ -269,10 +260,9 @@
 (defn quit! []
   (swap! state assoc :exit? true))
 
-(def focus-cycle
-  "Order Tab walks focused panes. PageUp/PageDown route to the pane
-   currently in focus (see process-key in tui.main)."
-  [:input :chat :portfolio :watchlist])
+;; Order Tab cycles through. PageUp/PageDown route to whichever pane
+;; is currently in focus — see process-key in tui.main.
+(def focus-cycle [:input :chat :portfolio :watchlist])
 
 (defn toggle-focus! []
   (swap! state update :focus
@@ -280,15 +270,11 @@
                 next-idx (mod (inc (max 0 idx)) (count focus-cycle))]
             (nth focus-cycle next-idx))))
 
-(defn adjust-portfolio-scroll!
-  "Bump portfolio offset by `delta`. Clamped to 0 here; upper clamp
-   in render where the row count is known."
-  [delta]
+;; Lower-clamp here; upper-clamp at render-time where the row count is known.
+(defn adjust-portfolio-scroll! [delta]
   (swap! state update :portfolio-offset #(max 0 (+ (or % 0) delta))))
 
-(defn adjust-watchlist-scroll!
-  "Bump watchlist offset by `delta`."
-  [delta]
+(defn adjust-watchlist-scroll! [delta]
   (swap! state update :watchlist-offset #(max 0 (+ (or % 0) delta))))
 
 (defn persist-input-history!

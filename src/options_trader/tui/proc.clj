@@ -1,11 +1,8 @@
 (ns options-trader.tui.proc
-  "Single point of contact for ProcessBuilder.
-
-   We spawn external CLIs (claude, pi) and need to inherit the parent env
-   (so PATH/HOME survive) while applying a few overrides on top. Clojure's
-   shell/sh replaces the env wholesale, so we drop to ProcessBuilder. This
-   ns is the one place that does the interop — type hints live here so the
-   JDK-internal ProcessEnvironment$StringEnvironment class can't bite us.")
+  "ProcessBuilder gateway. Subprocess env inherits the parent (PATH/HOME)
+   then applies overrides — clojure.java.shell/sh replaces env wholesale,
+   so we drop to ProcessBuilder. Centralised so the JDK-internal
+   ProcessEnvironment$StringEnvironment type hints stay in one place.")
 
 (defn spawn!
   "Start a subprocess with merged env vars and return the Process.

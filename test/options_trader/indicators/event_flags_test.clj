@@ -1,8 +1,5 @@
 (ns options-trader.indicators.event-flags-test
-  "Fixture-driven tests for the activist/M&A/FDA event-flag slice.
-   Covers: M&A keyword + positive sentiment within 30d → true; old M&A news (>30d) → false;
-   13D filing within 90d → true; old 13G (>90d) → false; FDA event 7d out → true;
-   FDA event 30d out → false; symbol with no source rows → all three false; idempotency."
+  "Tests for the activist / M&A / FDA event-flag indicator slice."
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
@@ -13,7 +10,6 @@
            [java.time LocalDate LocalDateTime]))
 
 
-;;; ── Seed helpers ─────────────────────────────────────────────────────────────
 
 (defn- ts-days-ago [n]
   (Timestamp/valueOf (.minusDays (LocalDateTime/now) n)))
@@ -51,7 +47,6 @@
      id sym event-date]))
 
 
-;;; ── M&A rumor flag: recent news → true ──────────────────────────────────────
 
 (deftest ma-rumor-recent-true-test
   (testing "M&A keyword + sentiment > 0.2 within 30d sets ma_rumor_flag = true"
@@ -67,7 +62,6 @@
         (is (false? (:activist_filing_flag row)))
         (is (false? (:fda_event_flag row)))))))
 
-;;; ── M&A rumor flag: old news → false ────────────────────────────────────────
 
 (deftest ma-rumor-old-false-test
   (testing "M&A keyword + positive sentiment but >30d old → ma_rumor_flag = false"
@@ -81,7 +75,6 @@
         (is (some? row))
         (is (false? (:ma_rumor_flag row)) "stale M&A news (>30d) → false")))))
 
-;;; ── Activist filing flag: 13D within 90d → true ─────────────────────────────
 
 (deftest activist-13d-recent-true-test
   (testing "13D filing within last 90d sets activist_filing_flag = true"
@@ -97,7 +90,6 @@
         (is (true? (:activist_filing_flag row)) "13D within 90d → true")
         (is (false? (:fda_event_flag row)))))))
 
-;;; ── Activist filing flag: old 13G → false ───────────────────────────────────
 
 (deftest activist-13g-old-false-test
   (testing "13G filing older than 90d → activist_filing_flag = false"
@@ -111,7 +103,6 @@
         (is (some? row))
         (is (false? (:activist_filing_flag row)) "13G older than 90d → false")))))
 
-;;; ── FDA event flag: event 7d out → true ─────────────────────────────────────
 
 (deftest fda-event-near-true-test
   (testing "FDA event_date 7 days from now sets fda_event_flag = true"
@@ -127,7 +118,6 @@
         (is (false? (:activist_filing_flag row)))
         (is (true? (:fda_event_flag row)) "FDA event 7d out (within 14d window) → true")))))
 
-;;; ── FDA event flag: event 30d out → false ───────────────────────────────────
 
 (deftest fda-event-far-false-test
   (testing "FDA event_date 30 days from now → fda_event_flag = false (outside 14d window)"
@@ -141,7 +131,6 @@
         (is (some? row))
         (is (false? (:fda_event_flag row)) "FDA event 30d out (outside 14d window) → false")))))
 
-;;; ── No source rows → all three false ────────────────────────────────────────
 
 (deftest no-source-rows-all-false-test
   (testing "symbol in latest_indicators with no matching news/filings/events → all flags false"
@@ -156,7 +145,6 @@
         (is (false? (:activist_filing_flag row)) "no filings → activist_filing_flag false")
         (is (false? (:fda_event_flag row))       "no events → fda_event_flag false")))))
 
-;;; ── Idempotency ──────────────────────────────────────────────────────────────
 
 (deftest idempotency-test
   (testing "two refresh! calls produce exactly one row per symbol with stable values"

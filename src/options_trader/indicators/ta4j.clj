@@ -32,7 +32,6 @@
            [org.ta4j.core.indicators.pivotpoints FibonacciReversalIndicator$FibReversalTyp]
            [java.time ZonedDateTime ZoneId Duration Instant ZoneOffset]))
 
-;;; ── Num factories ──────────────────────────────────────────────────────────
 
 (defn num-double
   "Wrap a numeric value as ta4j DoubleNum."
@@ -44,7 +43,6 @@
   ^Num [v]
   (DecimalNum/valueOf (double v)))
 
-;;; ── Bar series ──────────────────────────────────────────────────────────────
 
 (defn bar-series
   "Create a named BaseBarSeries."
@@ -77,7 +75,6 @@
    :close   (-> bar .getClosePrice .doubleValue)
    :volume  (-> bar .getVolume .doubleValue)})
 
-;;; ── Dataset conversion ──────────────────────────────────────────────────────
 
 (defn ds->ta4j-ohlcv
   "Convert a seq of maps with :time :open :high :low :close :volume keys
@@ -111,7 +108,6 @@
            :volume   (long   (or (:volume r) 0))})
         (q/load-bars-daily ds sym)))
 
-;;; ── Indicator constructors ──────────────────────────────────────────────────
 
 (defn close-price
   "ClosePriceIndicator wrapping a series."
@@ -161,7 +157,6 @@
         low   (BollingerBandsLowerIndicator. mid std-i kk)]
     (BollingerBandWidthIndicator. upp mid low)))
 
-;;; ── ADX / DI family ─────────────────────────────────────────────────────────
 
 (defn adx
   "ADXIndicator (Wilder-smoothed Average Directional Index)."
@@ -183,7 +178,6 @@
   [^BarSeries series bar-count]
   (MinusDIIndicator. series (int bar-count)))
 
-;;; ── Aroon family ────────────────────────────────────────────────────────────
 
 (defn aroon-up
   "AroonUpIndicator."
@@ -200,7 +194,6 @@
   [^BarSeries series bar-count]
   (AroonOscillatorIndicator. series (int bar-count)))
 
-;;; ── Range / oscillator indicators ───────────────────────────────────────────
 
 (defn chop
   "ChopIndicator (Choppiness Index). scaleUpTo=100."
@@ -237,7 +230,6 @@
   [^BarSeries series bar-count]
   (CMOIndicator. (close-price series) (int bar-count)))
 
-;;; ── MACD signal and histogram ───────────────────────────────────────────────
 
 (defn macd-signal
   "EMA[signal-period] over MACD(short,long) — the signal line."
@@ -253,7 +245,6 @@
          s (EMAIndicator. m (int signal-p))]
      (CombineIndicator/minus m s))))
 
-;;; ── Parabolic SAR ───────────────────────────────────────────────────────────
 
 (defn parabolic-sar
   "ParabolicSarIndicator[start, increment, max].
@@ -264,7 +255,6 @@
                           (.numOf series (double increment))
                           (.numOf series (double max-val))))
 
-;;; ── Volume indicators ───────────────────────────────────────────────────────
 
 (defn obv
   "OnBalanceVolumeIndicator (no parameters)."
@@ -276,7 +266,6 @@
   [^BarSeries series bar-count]
   (ChaikinMoneyFlowIndicator. series (int bar-count)))
 
-;;; ── Statistical / risk indicators ──────────────────────────────────────────
 
 (defn ulcer-index
   "UlcerIndexIndicator[barCount] on close price."
@@ -288,7 +277,6 @@
   [^BarSeries series ema-period bar-count]
   (MassIndexIndicator. series (int ema-period) (int bar-count)))
 
-;;; ── Bollinger upper / lower / %B ────────────────────────────────────────────
 
 (defn bollinger-upper
   "BollingerBandsUpperIndicator[barCount, k]."
@@ -315,7 +303,6 @@
   [^BarSeries series bar-count k]
   (PercentBIndicator. (close-price series) (int bar-count) (double k)))
 
-;;; ── Keltner channels ────────────────────────────────────────────────────────
 
 (defn keltner-upper
   "KeltnerChannelUpperIndicator[emaPeriod, ratio, atrPeriod]."
@@ -329,14 +316,12 @@
   (let [mid (KeltnerChannelMiddleIndicator. series (int period))]
     (KeltnerChannelLowerIndicator. mid (double ratio) (int atr-period))))
 
-;;; ── Fisher Transform ────────────────────────────────────────────────────────
 
 (defn fisher
   "FisherIndicator[barCount] on close price."
   [^BarSeries series bar-count]
   (FisherIndicator. (close-price series) (int bar-count)))
 
-;;; ── Pivot points (classical + Fibonacci) ───────────────────────────────────
 
 (defn pivot-point
   "PivotPointIndicator on the prior bar's H/L/C (TimeLevel.BARBASED).
@@ -366,7 +351,6 @@
              :resistance FibonacciReversalIndicator$FibReversalTyp/RESISTANCE)]
     (FibonacciReversalIndicator. (pivot-point series) (double factor) ty)))
 
-;;; ── Value extraction ────────────────────────────────────────────────────────
 
 (defn indicator-value
   "Get the double value of an indicator at bar index."
@@ -382,7 +366,6 @@
    (let [n (bar-count series)]
      (mapv #(indicator-value indicator %) (range first-index n)))))
 
-;;; ── Known indicator registry ────────────────────────────────────────────────
 
 (def class-name-overrides
   "ta4j classes whose names don't end in 'Indicator'."
@@ -399,7 +382,6 @@
    :ATR               atr
    :BollingerBandWidth (fn [s params] (bollinger-band-width s (first params) (second params)))})
 
-;;; ── Generic indicator dispatcher ────────────────────────────────────────────
 
 (def ^:private indicator-dispatch
   "Complete keyword → (fn [series params]) constructor map for all declared indicators."

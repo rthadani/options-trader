@@ -1,8 +1,5 @@
 (ns options-trader.indicators.earnings-views-test
-  "Fixture-driven tests for earnings-derived indicators.
-   Covers: happy path (8 events, hand-computed avg/count), partial history (<8 events),
-   no events (all NULL), no calendar row (days_to_next NULL), gap_held_flag truthiness,
-   and idempotency."
+  "Tests for earnings-derived indicator columns."
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
             [options-trader.db.duckdb :as db]
@@ -40,7 +37,6 @@
      sym (Date/valueOf report-date)]))
 
 
-;;; ── Happy path ───────────────────────────────────────────────────────────────
 
 (deftest happy-path-test
   (testing "8 events: hand-computed avg_earnings_move_pct and count_above_implied"
@@ -129,7 +125,6 @@
           (is (some? (:operating_margin_delta_qoq row)))
           (is (tu/approx= (:operating_margin_delta_qoq row) 0.02)))))))
 
-;;; ── Partial history ──────────────────────────────────────────────────────────
 
 (deftest partial-history-test
   (testing "<8 events still computes avg_earnings_move_pct"
@@ -156,7 +151,6 @@
           (is (some? (:earnings_move_count_above_implied row)))
           (is (tu/approx= (:earnings_move_count_above_implied row) 4.0)))))))
 
-;;; ── No earnings events ───────────────────────────────────────────────────────
 
 (deftest no-events-test
   (testing "symbol with no earnings_events row → all derived columns NULL"
@@ -184,7 +178,6 @@
         (testing "guidance_direction is NULL"
           (is (nil? (:guidance_direction row))))))))
 
-;;; ── No calendar row ──────────────────────────────────────────────────────────
 
 (deftest no-calendar-test
   (testing "earnings events exist but no earnings_calendar row → days_to_next NULL, days_since non-NULL"
@@ -207,7 +200,6 @@
         (testing "days_to_next_earnings is NULL (no calendar row)"
           (is (nil? (:days_to_next_earnings row))))))))
 
-;;; ── gap_held_flag truthiness ─────────────────────────────────────────────────
 
 (deftest gap-held-flag-test
   (testing "gap_held_flag: true when close_after > open_after, false otherwise"
@@ -230,7 +222,6 @@
       (testing "gap NOT held → gap_held_flag = false"
         (is (false? (:gap_held_flag (tu/query-row ds "GNHLD"))))))))
 
-;;; ── Idempotency ──────────────────────────────────────────────────────────────
 
 (deftest idempotency-test
   (testing "two refresh calls with same data produce identical rows (no duplicates)"

@@ -3,7 +3,6 @@
    Provides a multimethod skeleton for routing IBKR response messages."
   (:refer-clojure :exclude [resolve]))
 
-;;; ── State ────────────────────────────────────────────────────────────────────
 
 (defonce ^:private counter  (atom 0))
 (defonce ^:private registry (atom {}))
@@ -14,14 +13,12 @@
   (reset! counter 0)
   (reset! registry {}))
 
-;;; ── Allocator ────────────────────────────────────────────────────────────────
 
 (defn next-id!
   "Return the next monotonically increasing request id (positive integer)."
   []
   (swap! counter inc))
 
-;;; ── Registry ─────────────────────────────────────────────────────────────────
 
 (defn register!
   "Associate id with callback cb. Returns id."
@@ -46,7 +43,6 @@
   []
   (set (keys @registry)))
 
-;;; ── Response-handler multimethod ─────────────────────────────────────────────
 
 (defmulti response-handler
   "Dispatch an IBKR response message map by its :type key.

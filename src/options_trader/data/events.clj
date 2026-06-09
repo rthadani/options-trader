@@ -1,14 +1,8 @@
 (ns options-trader.data.events
-  "Skeleton namespace for corporate events and catalyst data ingestion.
-   Config key: :data-sources/:events
-   Protocol:   IEventsSource — pluggable backend contract.
-
-   Loads without any network or file-system side-effects at namespace init time.
-   No ib-re-actor or HTTP calls are made until an implementation is registered
-   and explicitly invoked."
+  "Pluggable corporate-events source (dividends, splits, M&A). Config
+   key :data-sources/:events."
   )
 
-;;; ── Protocol ────────────────────────────────────────────────────────────────
 
 (defprotocol IEventsSource
   "Pluggable source contract for corporate events (dividends, splits, M&A, etc.).
@@ -30,7 +24,6 @@
   (supported-symbols [this]
     "Return the set of symbols this source covers, or :all."))
 
-;;; ── Stub / unavailable implementation ──────────────────────────────────────
 
 (deftype UnavailableEventsSource []
   IEventsSource
@@ -44,7 +37,6 @@
   "Fallback source returned when no implementation is configured."
   (UnavailableEventsSource.))
 
-;;; ── Dispatch ────────────────────────────────────────────────────────────────
 
 (defmulti make-source
   "Construct an IEventsSource from a config map.
@@ -55,7 +47,6 @@
 (defmethod make-source :default [_cfg]
   default-source)
 
-;;; ── Public API (delegates to configured source) ─────────────────────────────
 
 (defn fetch-dividend-calendar
   "Fetch dividend schedule for symbol using the configured source.

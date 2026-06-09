@@ -1,17 +1,9 @@
 (ns options-trader.tui.ibkr
-  "Background IBKR connection + live portfolio streaming for the TUI.
-
-   Architecture:
-     • connect-async! opens the TWS socket, captures the account-id from the
-       managedAccounts handshake, does ONE initial refresh from DB+IB so the
-       panel is populated immediately, then starts the streaming subscription
-       and the health watchdog.
-     • The streaming subscription uses reqAccountUpdates → :update-portfolio
-       (live market values per position) + :update-account-value (NetLiq, BP,
-       margin, etc.). Each event ticks state directly — no polling.
-     • The health watchdog runs every health-interval-ms and corrects
-       :tws-status when it diverges from the actual socket state. Catches
-       silent drops the underlying TCP doesn't surface."
+  "TUI-side IBKR connection: connect-async! opens TWS, captures the
+   account-id, runs a one-shot refresh, then starts the reqAccountUpdates
+   stream (live position market values + account summary) plus a health
+   watchdog that fixes :tws-status when the underlying socket drops
+   silently."
   (:require [clojure.core.async :as a]
             [options-trader.data.ibkr :as ibkr]
             [options-trader.portfolio.core :as portfolio]
@@ -30,7 +22,6 @@
 
 (def ^:private health-interval-ms 2000)
 
-;;; ── Logging helper ────────────────────────────────────────────────────────
 
 (defn- log-message!
   "Surface an ibkr status line in the chat (NOT the activity stream, which
@@ -38,7 +29,6 @@
   [msg]
   (st/append-chat! :system (str "[ibkr] " msg)))
 
-;;; ── One-shot DB+IB refresh (used at startup and by /refresh) ──────────────
 
 (defn refresh-from-ibkr! [ds account-id]
   (when-let [conn @conn-atom]
@@ -54,7 +44,6 @@
       (catch Throwable t
         (log-message! (str "refresh failed: " (.getMessage t)))))))
 
-;;; ── Streaming portfolio + account updates ─────────────────────────────────
 
 (defn- bump-counter! [k]
   (swap! st/state update-in [:stream :counters]
@@ -162,7 +151,6 @@
     (swap! st/state assoc-in [:stream :pnl-rid] nil))
   (cancel-all-pnl-singles!))
 
-;;; ── Health watchdog ───────────────────────────────────────────────────────
 
 (def ^:private stale-stream-threshold-ms 45000)
 
@@ -219,7 +207,6 @@
     (a/close! stop)
     (reset! health-stop-atom nil)))
 
-;;; ── Connect / disconnect ──────────────────────────────────────────────────
 
 (defn- await-account!
   "Poll for the account-id from the TWS managedAccounts handshake. The event

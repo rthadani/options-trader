@@ -9,7 +9,6 @@
 
 (hugsql/def-sqlvec-fns "sql/indicators.sql")
 
-;;; ── Lookups ──────────────────────────────────────────────────────────
 
 (defn select-latest-indicators
   "Latest-indicator rows for the given vector of symbols."
@@ -58,7 +57,6 @@
                       {:symbol symbol :indicator indicator :n-days n-days})
                 :pr))
 
-;;; ── Schema helpers ───────────────────────────────────────────────────
 ;;
 ;; ALTER TABLE column names can't be bound via JDBC params (the IDENT must
 ;; be literal SQL). Build the statement with string concat — values come
@@ -87,7 +85,6 @@
     [(str "ALTER TABLE " (name table)
           " ADD COLUMN IF NOT EXISTS " (name col-keyword) " " sql-type)]))
 
-;;; ── Dynamic upsert into latest_indicators ────────────────────────────
 
 (defn upsert-latest-row!
   "Upsert one row into latest_indicators keyed on (symbol). `values` is
@@ -122,7 +119,6 @@
                           set-clause)]
       (jdbc/execute! ds (into [sql] (concat key-vals (vals values)))))))
 
-;;; ── Run a static recompute pass ──────────────────────────────────────
 
 (defn run-static-recompute!
   "Run an indicator-pass SELECT (typically a big CTE that yields one row

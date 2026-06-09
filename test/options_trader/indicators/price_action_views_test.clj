@@ -1,9 +1,5 @@
 (ns options-trader.indicators.price-action-views-test
-  "Fixture-driven tests for price-action and volume indicators.
-   Covers: happy path (250 bars, hand-computed SMA and ratios), partial history
-   (60 bars: sma_50 populated / sma_200 NULL), sparse history (30 bars: both NULL),
-   idempotency (two calls produce one row per symbol), and zero-close edge
-   (NULLIF prevents divide-by-zero when SMA collapses to zero)."
+  "Tests for SMA / volume-ratio indicators on latest_indicators."
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
             [options-trader.db.duckdb :as db]
@@ -27,7 +23,6 @@
 (defn- approx= [a b]
   (tu/approx= a b 1e-4))
 
-;;; ── Happy path: 250 bars ─────────────────────────────────────────────────────
 
 (deftest happy-path-test
   (testing "250 bars: all columns populated with hand-computed values"
@@ -68,7 +63,6 @@
           (is (some? (:volume_ratio_5d_vs_20d row)))
           (is (approx= (:volume_ratio_5d_vs_20d row) (/ 1200.0 1050.0))))))))
 
-;;; ── 60 bars: sma_50 populated, sma_200 NULL ──────────────────────────────────
 
 (deftest sixty-bars-test
   (testing "60 bars: sma_50 columns non-NULL, sma_200 columns NULL, volume_ratio non-NULL"
@@ -93,7 +87,6 @@
         (testing "volume_ratio_5d_vs_20d non-NULL (60 >= 20 bars)"
           (is (some? (:volume_ratio_5d_vs_20d row))))))))
 
-;;; ── 30 bars: both sma columns NULL ──────────────────────────────────────────
 
 (deftest thirty-bars-test
   (testing "30 bars: sma_50 and sma_200 columns NULL, volume_ratio non-NULL"
@@ -118,7 +111,6 @@
         (testing "volume_ratio_5d_vs_20d non-NULL (30 >= 20 bars)"
           (is (some? (:volume_ratio_5d_vs_20d row))))))))
 
-;;; ── Idempotency ──────────────────────────────────────────────────────────────
 
 (deftest idempotency-test
   (testing "two refresh! calls with same data produce exactly one row per symbol"
@@ -140,7 +132,6 @@
       (testing "volume_ratio_5d_vs_20d persists after second call"
         (is (some? (:volume_ratio_5d_vs_20d (tu/query-row ds "IDEM"))))))))
 
-;;; ── Zero close: NULLIF guards divide-by-zero ─────────────────────────────────
 
 (deftest zero-close-test
   (testing "250 bars all close=0: NULLIF prevents divide-by-zero, sma columns NULL"

@@ -9,7 +9,6 @@
 
 (defonce ^:private edgar-init-once! (atom nil))
 
-;;; ── Canonical fundamentals schema ───────────────────────────────────────────
 ;;;
 ;;; Same keys regardless of source. When IBKR ReportSnapshot is wired the
 ;;; Reuters codes (TTMNIAC, TTMREVPS, etc.) map onto these same keywords.

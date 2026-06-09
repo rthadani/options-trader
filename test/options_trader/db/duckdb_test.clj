@@ -5,7 +5,6 @@
             [options-trader.db.duckdb :as db]
             [options-trader.test-util :as tu]))
 
-;;; ── Helpers ──────────────────────────────────────────────────────────────────
 
 (def ^:private expected-tables
   #{"bars_daily" "bars_intraday" "quotes" "option_chain" "iv_daily"
@@ -25,7 +24,6 @@
        (map :table_name)
        set))
 
-;;; ── Table-existence test ─────────────────────────────────────────────────────
 
 (deftest bootstrap-creates-all-tables-test
   (testing "bootstrap! creates every expected Phase 3 table"
@@ -37,7 +35,6 @@
         (is (contains? ts t)
             (str "expected table missing after bootstrap!: " t))))))
 
-;;; ── Idempotency test ─────────────────────────────────────────────────────────
 
 (deftest bootstrap-idempotency-test
   (testing "calling bootstrap! twice records each migration exactly once"
@@ -54,7 +51,6 @@
         (is (contains? applied 2)
             "_schema_migrations must contain version 2")))))
 
-;;; ── bars_daily round-trip ────────────────────────────────────────────────────
 
 (deftest bars-daily-round-trip-test
   (testing "insert and read back a bars_daily row"
@@ -73,7 +69,6 @@
         (is (= 186.0  (-> rows first :close)))
         (is (= 52000000 (-> rows first :volume)))))))
 
-;;; ── positions round-trip ─────────────────────────────────────────────────────
 
 (deftest positions-round-trip-test
   (testing "insert and read back a positions row"

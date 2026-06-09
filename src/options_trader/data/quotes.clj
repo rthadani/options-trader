@@ -1,17 +1,9 @@
 (ns options-trader.data.quotes
-  "Detailed single-symbol quote: a live market-data snapshot from a pluggable
-   IMarketDataSource fused with DB-derived metrics (14-day average volume,
-   put/call OI + volume ratios, intraday VWAP).
-
-   All backend-specific plumbing lives behind data.market-data — this
-   namespace operates on the protocol so an alternate backend (Polygon,
-   Alpaca, etc.) can be swapped in by passing a different source:
-     (md/make-source {:type :ibkr :ib-client conn})
-     (md/make-source {:type :mock :responses {...}})"
+  "Per-symbol detailed quote: live IMarketDataSource snapshot fused with
+   DB-derived metrics (avg volume, put/call ratios, intraday VWAP)."
   (:require [options-trader.data.market-data :as md]
             [options-trader.db.queries.quotes :as q]))
 
-;;; ── DB-side metrics ───────────────────────────────────────────────────────
 
 (defn avg-volume
   "Trailing N-day average daily volume from bars_daily."
@@ -40,7 +32,6 @@
       (vwap-from-bars-intraday ds symbol)
       (md/session-vwap src symbol)))
 
-;;; ── Helpers ───────────────────────────────────────────────────────────────
 
 (defn- price-of
   "Pick the most representative price from a snapshot: last → close → mid."
@@ -51,7 +42,6 @@
         (when (and (:bid snap) (:ask snap))
           (/ (+ (double (:bid snap)) (double (:ask snap))) 2.0)))))
 
-;;; ── Public composition fns (operate on IMarketDataSource) ─────────────────
 
 (defn detailed-quote
   "Full quote for `symbol`. Combines a market-data snapshot from `src` with

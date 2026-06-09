@@ -56,7 +56,6 @@
   (println "Options:")
   (println summary))
 
-;;; ── Shared setup ───────────────────────────────────────────────────────────
 
 (defn- open-ds! [cfg]
   (duckdb/bootstrap! cfg)
@@ -83,7 +82,6 @@
     :else
     (throw (ex-info "must supply --symbols or --universe" {}))))
 
-;;; ── Subcommand dispatch ────────────────────────────────────────────────────
 
 (defmulti run-subcommand (fn [cmd _opts _args] cmd))
 

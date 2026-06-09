@@ -1,9 +1,5 @@
 (ns options-trader.indicators.beta-test
-  "Fixture-driven tests for the 252-day OLS beta slice.
-   Covers: happy path (260 paired observations → beta ≈ 2.0 within tolerance),
-   short history (< 252 bars → beta_252d NULL), missing benchmark (no SPY rows
-   for matching dates → NULL), idempotency (two refresh calls → one row),
-   and a perfect-correlation sanity check (sym_log_ret = bench_ret → beta = 1.0 exactly)."
+  "Tests for the 252-day OLS beta slice. Each deftest is self-describing."
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
@@ -14,7 +10,6 @@
            [java.time LocalDate]))
 
 
-;;; ── Seed helpers ─────────────────────────────────────────────────────────────
 
 (defn- make-dates
   "Generate n consecutive LocalDate values starting from 2020-01-01."
@@ -44,7 +39,6 @@
             [(str "SELECT beta_252d FROM latest_indicators WHERE symbol = '" sym "'")]
             tu/as-lower))))
 
-;;; ── Happy path: 260 paired observations, expected beta ≈ 2.0 ────────────────
 
 (deftest happy-path-260-paired-bars-test
   (testing "260 paired observations with y=2x relationship → beta_252d ≈ 2.0"
@@ -65,7 +59,6 @@
           (is (< (Math/abs (- v 2.0)) 0.001)
               (str "expected beta ≈ 2.0, got " v)))))))
 
-;;; ── Short history: < 252 paired bars → beta_252d NULL ───────────────────────
 
 (deftest short-history-null-test
   (testing "249 paired observations (< 252 minimum) → beta_252d is NULL"
@@ -83,7 +76,6 @@
         (let [v (fetch-beta ds "SHORT")]
           (is (nil? v) "249 paired observations → beta_252d must be NULL"))))))
 
-;;; ── Missing benchmark: no SPY rows → NULL ────────────────────────────────────
 
 (deftest missing-benchmark-null-test
   (testing "symbol has 261 bars but no benchmark data → no beta row / NULL"
@@ -102,7 +94,6 @@
           (is (or (nil? row) (nil? (:beta_252d row)))
               "no benchmark_returns rows → beta_252d must be NULL or row absent"))))))
 
-;;; ── Idempotency: two refresh calls → exactly one row ────────────────────────
 
 (deftest idempotency-test
   (testing "two successive refresh! calls leave exactly one row per symbol"
@@ -126,7 +117,6 @@
           (is (= 1 cnt)  "upsert must not duplicate rows on repeated calls")
           (is (some? v)  "beta_252d must be present after idempotent upsert"))))))
 
-;;; ── Perfect correlation: sym_log_ret = bench_ret → regr_slope = 1.0 exactly ─
 
 (deftest perfect-correlation-beta-one-test
   (testing "sym_log_ret identical to bench_ret → regr_slope = 1.0 exactly"

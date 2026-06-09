@@ -100,7 +100,6 @@
         hint (some #(get in %) [:symbol :name :query :sql :path :file_path :command])]
     (str (:name tu) (when hint (str " " (subs (str hint) 0 (min 40 (count (str hint)))))))))
 
-;;; ── Claude event handling ─────────────────────────────────────────────────
 
 (defn handle-event [ev sid-atom]
   (let [t (:type ev)
@@ -130,7 +129,6 @@
         (a/>!! refresh-chan :refresh))
       nil)))
 
-;;; ── Pi event handling ─────────────────────────────────────────────────────
 
 (defn handle-pi-event [ev]
   (swap! st/state assoc :scroll-offset 0)
@@ -165,7 +163,6 @@
 
     nil))
 
-;;; ── Agent spawn ───────────────────────────────────────────────────────────
 
 (defn- start-streaming-proc!
   "Start a streaming agent subprocess (claude / pi). stderr stays separate
@@ -1102,7 +1099,6 @@
     (.start thread)
     thread))
 
-;;; ── TUI lifecycle ──────────────────────────────────────────────────────────
 
 (defn- init-tui-state!
   "Initialize state atom and run any startup refresh."

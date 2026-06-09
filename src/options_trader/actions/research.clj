@@ -1,12 +1,8 @@
 (ns options-trader.actions.research
-  "Read-only research actions for single-instrument deep-dive workflows.
-   Each handler is dispatched via actions/handle-action on :type. Per the
-   project CLAUDE.md invariant, all tool calls funnel through actions/* so
-   any future guard (rate-limit, audit, etc.) applies uniformly.
-
-   Sources may be supplied in the action map under :source — otherwise the
-   data ns's default-source (UnavailableSource stub) is used, so the call
-   returns :unavailable instead of blowing up."
+  "Read-only research actions, all dispatched through actions/handle-action
+   so future guards (rate-limit, audit) apply uniformly. Missing :source
+   falls back to the data ns's UnavailableSource — calls return :unavailable
+   rather than throwing."
   (:require [clojure.string                   :as str]
             [options-trader.actions.core      :as actions]
             [options-trader.data.news         :as news]
@@ -184,7 +180,6 @@
        (:history inc) (assoc :history (si/fetch-si symbol p src))
        (:borrow inc)  (assoc :borrow  (si/fetch-borrow symbol src)))}))
 
-;;; ── Options ─────────────────────────────────────────────────────────────────
 
 (defn- collapse-chain
   "Roll up per-exchange `:security-definition-optional-parameter` events into

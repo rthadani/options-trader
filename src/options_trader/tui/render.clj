@@ -88,7 +88,6 @@
          (str (if (zero? i) (str prefix " ") indent) ln))
        wrapped))))
 
-;; ── Portfolio section ─────────────────────────────────────────────────────────
 
 (defn- portfolio-header [{:keys [account-id tws-status portfolio-updated-at]} width]
   (let [tws  (case tws-status
@@ -111,18 +110,14 @@
               (when age (str "  · stream: " age)))
          width)))
 
-(defn- short-expiry
-  "Compact MMdd string for an option expiry LocalDate, or nil for the
-   1900-01-01 sentinel used on stock positions."
-  [d]
+;; MMdd expiry, or nil for the 1900-01-01 sentinel used on stocks.
+(defn- short-expiry [d]
   (when (and (instance? java.time.LocalDate d)
              (>= (.getYear ^java.time.LocalDate d) 2000))
     (.format ^java.time.LocalDate d
              (java.time.format.DateTimeFormatter/ofPattern "MMdd"))))
 
 (def ^:private portfolio-columns
-  "Column spec consumed by charm.components.table. Widths add up plus the
-   two-space separator between columns; total nominal width ≈ 70 chars."
   [{:title "Sym"  :width 14}
    {:title "Qty"  :width 6}
    {:title "Mkt"  :width 10}
@@ -131,7 +126,6 @@
    {:title "P&L%" :width 7}])
 
 (defn- position->row
-  "Project a position map into the row vector charm/table expects."
   [{:keys [symbol opt-right strike expiry qty avg-cost market-value unrealized-pnl]}]
   (let [exp    (short-expiry expiry)
         label  (cond
@@ -165,7 +159,7 @@
   (let [positions (vec (:positions state))
         offset    (max 0 (min (:portfolio-offset state 0)
                               (max 0 (dec (count positions)))))
-        ;; Reserved chrome: header (1) + table-header (1) + footer (1) = 3.
+        ;; Reserve 3 rows of chrome: status, column-header, footer.
         body-h    (max 0 (- port-h 3))
         visible   (->> positions (drop offset) (take body-h) vec)
         rows      (mapv position->row visible)
@@ -175,7 +169,6 @@
                               :header? true
                               :header-style nil :row-style nil :cursor-style nil)
                     {:separator "  "})
-        ;; Split into [header & body-lines], pad each to width.
         all-lines (str/split-lines rendered)
         header'   (pad (first all-lines) width)
         body      (mapv #(pad % width) (rest all-lines))
@@ -191,7 +184,6 @@
         all       (concat chrome [header'] body (when hint [hint]) empties footer)]
     (take port-h (concat all (repeat (pad "" width))))))
 
-;; ── Main render ───────────────────────────────────────────────────────────────
 
 (defn- render-input-lines
   "Wrap prompt + input to width and apply cursor inversion when focused.

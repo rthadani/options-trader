@@ -1,12 +1,11 @@
 (ns options-trader.tui.watchlist
   "Live-streaming watchlist beside the portfolio panel. The user adds symbols
-   with /add-to-watchlist; each one gets its own IB market-data stream tagged
-   :watchlist in the sub manager. Tick events fold into st/state under
-   :watchlist-quotes so the render is read-only against the atom.
+   with /add-to-watchlist; each one gets its own IB market-data stream and
+   tick events fold into st/state under :watchlist-quotes.
 
-   avg-volume isn't part of the tick stream — it comes from
-   latest_indicators.avg_vol_20d, refreshed daily by the indicator runner.
-   We snapshot it once on add and keep it static for the session."
+   VOL and AVG come from bars_daily on add, not from the tick stream —
+   IB's per-contract lot multiplier makes live volume unreliable for an
+   at-a-glance column."
   (:require [charm.components.table :as ct]
             [clojure.java.io :as io]
             [clojure.string  :as str]
@@ -85,15 +84,9 @@
     (catch Throwable t
       (log/warnf t "watchlist on-tick crashed sym=%s ev=%s" sym (pr-str ev)))))
 
-(def ^:private avg-volume-window
-  "Trading days used for the AVG column."
-  14)
+(def ^:private avg-volume-window 14)
 
-(defn- avg-daily-volume
-  "Mean daily volume over the most recent `avg-volume-window` bars from the
-   warehouse, or nil if bars_daily has no rows for sym. Delegates to the
-   hugsql wrapper so the SQL itself lives in resources/sql/watchlist.sql."
-  [ds sym]
+(defn- avg-daily-volume [ds sym]
   (when ds
     (try (q/avg-daily-volume ds sym avg-volume-window)
          (catch Throwable _ nil))))
@@ -172,15 +165,11 @@
                      (update :watchlist-subs   dissoc sym))))
         {:ok true :sym sym}))))
 
-(defn persist!
-  "Write the current watchlist symbol list to disk."
-  []
-  (let [path (paths/watchlist-file)]
-    (util/safe-spit path (pr-str (vec (:watchlist @st/state))))))
+(defn persist! []
+  (util/safe-spit (paths/watchlist-file)
+                  (pr-str (vec (:watchlist @st/state)))))
 
-(defn load-symbols
-  "Read persisted symbols from disk, or [] if absent."
-  []
+(defn load-symbols []
   (let [path (paths/watchlist-file)]
     (or (when-let [data (and (.exists (io/file path))
                              (util/safe-edn-read (slurp path)))]
@@ -188,21 +177,16 @@
         [])))
 
 (defn restore!
-  "Resubscribe to every persisted symbol on startup. Silently skips symbols
-   that can't subscribe (e.g. IB not connected yet) — they stay in the
-   in-memory list with no quote data, and the user can /remove or retry."
+  "Resubscribe to every persisted symbol. Silently skips ones that can't
+   subscribe yet (e.g. IB still connecting) — the user can /remove or retry."
   [{:keys [ds conn]}]
   (doseq [sym (load-symbols)]
     (add! {:ds ds :conn conn :sym sym})))
 
-;; Render: build the right-hand watchlist column as a vec of strings of
-;; exactly `width` characters and `height` rows. Empty rows pad to height
-;; so the row count matches the portfolio pane for clean side-by-side
-;; composition.
 
+;; Strip ANSI SGR escapes before measuring visible width; otherwise the
+;; coloured CHG% cells push the column divider off-screen.
 (def ^:private ansi-sgr-re
-  ;; ANSI SGR escape sequences: ESC [ ... m. Used to count visible width
-  ;; without including invisible colour bytes.
   #"\[[0-9;]*m")
 
 (defn- visible-length [^String s]
@@ -234,7 +218,6 @@
     (pad-row "-" width)))
 
 (defn- fmt-num
-  "Format a number into a fixed-width string. nil → '-'."
   ([v]       (fmt-num v 8 2))
   ([v width] (fmt-num v width 2))
   ([v width dp]
@@ -256,9 +239,9 @@
             :else (format "%.0f" (double v)))]
     (pad-row s width)))
 
+;; Widths sum to 63; charm/table adds a 1-char gap between adjacent
+;; columns → 71 visible chars total. panel-width depends on this.
 (def ^:private columns
-  "Watchlist columns. Widths sum to 63; charm/table adds a 1-char gap
-   between each adjacent column → 63 + 8 = 71 visible chars."
   [{:title "SYM"  :width 6}
    {:title "LAST" :width 8}
    {:title "CHG%" :width 7}
@@ -274,10 +257,6 @@
      (dec (count columns))))
 
 (defn- quote->row
-  "Project a (sym, quote-map) pair into the row vector charm/table expects.
-   CHG% stays an ANSI-colored string — charm.ansi.width/string-width strips
-   ANSI for column-width calculations, so the colour codes don't break
-   alignment."
   [sym {:keys [last close bid ask bid-size ask-size volume avg-volume]}]
   [sym
    (fmt-num last 8)
@@ -289,16 +268,11 @@
    (fmt-int volume 7)
    (fmt-int avg-volume 7)])
 
-(defn panel-width
-  "Width in chars the watchlist column wants. Render composes the portfolio
-   pane with whatever's left after subtracting this + 1 for the divider."
-  []
-  total-width)
+(defn panel-width [] total-width)
 
 (defn panel-lines
-  "Build the right-side watchlist column as a vector of exactly `height`
-   lines, each padded to `panel-width` chars. Walks the user's offset
-   (PageUp/PageDown when watchlist has focus) so long lists scroll."
+  "Right-side watchlist column as `height` rows padded to panel-width.
+   Walks :watchlist-offset (PageUp/PageDown when focused) for scrolling."
   [state height]
   (let [w       (panel-width)
         wl      (vec (:watchlist state))

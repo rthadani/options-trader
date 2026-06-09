@@ -1,16 +1,9 @@
 (ns options-trader.data.earnings
-  "Skeleton namespace for earnings data ingestion.
-   Config key: :data-sources/:earnings
-   Protocol:   IEarningsSource — pluggable backend contract.
-
-   Loads without any network or file-system side-effects at namespace init time.
-   No ib-re-actor or HTTP calls are made until an implementation is registered
-   and explicitly invoked."
+  "Pluggable earnings source. Config key :data-sources/:earnings."
   (:require [options-trader.data.sources :as sources]
             [options-trader.db.queries.research-cache :as q]
             [taoensso.timbre :as log]))
 
-;;; ── Protocol ────────────────────────────────────────────────────────────────
 
 (defprotocol IEarningsSource
   "Pluggable source contract for earnings and guidance data.
@@ -29,7 +22,6 @@
   (supported-symbols [this]
     "Return the set of symbols this source covers, or :all."))
 
-;;; ── Stub / unavailable implementation ──────────────────────────────────────
 
 (deftype UnavailableEarningsSource []
   IEarningsSource
@@ -98,7 +90,6 @@
 (defmethod make-source :duckdb-cache [{:keys [ds fallback]}]
   (->DuckDbEarningsSource ds fallback))
 
-;;; ── Public API (delegates to configured source) ─────────────────────────────
 
 (defn fetch-earnings-history
   "Fetch historical earnings for symbol using the configured source.

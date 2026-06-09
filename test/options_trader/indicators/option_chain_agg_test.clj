@@ -1,7 +1,5 @@
 (ns options-trader.indicators.option-chain-agg-test
-  "Fixture-driven tests for option-chain aggregation into latest_indicators.
-   Covers ATM resolution, ±1 strike slicing, NULL propagation, and the
-   no-chain-rows case (all seven columns NULL)."
+  "Tests for option-chain aggregation into latest_indicators."
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
             [options-trader.db.duckdb :as db]
@@ -30,7 +28,6 @@
      (when volume (int volume))
      (when oi (int oi))]))
 
-;;; ── Tests ────────────────────────────────────────────────────────────────────
 
 (deftest happy-path-test
   (testing "AAPL: two expirations × five strikes, ATM=100, window={98,100,102}"

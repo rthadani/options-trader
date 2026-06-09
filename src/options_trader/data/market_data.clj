@@ -1,20 +1,9 @@
 (ns options-trader.data.market-data
-  "Pluggable market-data backend protocol. Implementations encapsulate
-   their own async plumbing — callers (quotes.clj, action handlers) work
-   in terms of synchronous methods that return quote maps directly.
-
-   A 'quote map' is a flat map keyed by any of:
-     :bid :ask :last :open :high :low :close
-     :bid-size :ask-size :last-size :volume :vwap
-     :iv :delta :gamma :theta :vega :underlying-price
-     :data-mode :warnings :errors :event-count :contract
-   Any field may be missing.
-
-   Standard non-map returns:
-     :unavailable  — backend rejected the request or has no connection
-     :timeout      — no terminal event within the backend's window
-
-   Construct via make-source — see :type :ibkr / :mock / :unavailable."
+  "Pluggable market-data backend. Implementations hide their async
+   plumbing; callers get a synchronous quote map back, with any field
+   optional. Non-map returns are :unavailable (no connection / rejected)
+   and :timeout. Construct via make-source — :type :ibkr / :mock /
+   :unavailable."
   (:require [options-trader.data.ibkr :as ibkr]))
 
 (defprotocol IMarketDataSource
@@ -35,7 +24,6 @@
      when the backend can't supply it. Lets quotes.clj stay backend-
      agnostic — it composes this with its own DB-derived VWAP."))
 
-;;; ── IBKR backend ─────────────────────────────────────────────────────────
 
 (defn- option-contract [{:keys [symbol expiry strike right exchange currency multiplier]}]
   {:symbol     symbol
@@ -155,7 +143,6 @@
   (session-vwap [_ symbol]
     (when ib-client (ib-session-vwap ib-client symbol))))
 
-;;; ── Unavailable backend (fallback) ────────────────────────────────────────
 
 (deftype UnavailableMarketDataSource []
   IMarketDataSource
@@ -165,7 +152,6 @@
   (calc-iv         [_ _opts]        :unavailable)
   (session-vwap    [_ _symbol]      nil))
 
-;;; ── Mock backend (tests) ──────────────────────────────────────────────────
 
 (deftype MockMarketDataSource [responses]
   IMarketDataSource
@@ -190,7 +176,6 @@
   ([] (make-mock-source {}))
   ([responses] (->MockMarketDataSource (atom responses))))
 
-;;; ── Construction ──────────────────────────────────────────────────────────
 
 (defmulti make-source
   "Construct a market data source from a config map. Dispatches on :type.

@@ -87,7 +87,6 @@
       (is (some #{"--resume"} (:cmd spec)))
       (is (some #{"sess-xyz"} (:cmd spec))))))
 
-;;; ── Stream-json parsers ────────────────────────────────────────────────────
 
 (def ^:private sample-jsonl
   (str

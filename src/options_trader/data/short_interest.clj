@@ -1,16 +1,10 @@
 (ns options-trader.data.short-interest
-  "Skeleton namespace for short-interest and borrow data ingestion.
-   Config key: :data-sources/:short-interest
-   Protocol:   IShortInterestSource — pluggable backend contract.
-
-   Loads without any network or file-system side-effects at namespace init time.
-   No ib-re-actor or HTTP calls are made until an implementation is registered
-   and explicitly invoked."
+  "Pluggable short-interest / borrow-rate source. Config key
+   :data-sources/:short-interest."
   (:require [options-trader.data.sources :as sources]
             [options-trader.db.queries.research-cache :as q]
             [taoensso.timbre :as log]))
 
-;;; ── Protocol ────────────────────────────────────────────────────────────────
 
 (defprotocol IShortInterestSource
   "Pluggable source contract for short-interest and borrow-rate data.
@@ -24,7 +18,6 @@
     "Fetch the current borrow/rebate rate for symbol.
      Returns a map with :symbol, :rate, :fee-rate, :availability, or :unavailable."))
 
-;;; ── Stub / unavailable implementation ──────────────────────────────────────
 
 (deftype UnavailableShortInterestSource []
   IShortInterestSource
@@ -74,7 +67,6 @@
 (defmethod make-source :duckdb-cache [{:keys [ds fallback]}]
   (->DuckDbShortInterestSource ds fallback))
 
-;;; ── Public API (delegates to configured source) ─────────────────────────────
 
 (defn fetch-si
   "Fetch short-interest data for symbol using the configured source.

@@ -34,7 +34,6 @@
     (try (@v obj) (catch Throwable _ obj))
     obj))
 
-;;; ── State ───────────────────────────────────────────────────────────────────
 
 (defonce ^:private conn-atom    (atom nil))
 (defonce ^:private pending      (atom {}))      ;; rid → {:cb fn :mode kw :events []}
@@ -50,7 +49,6 @@
 ;; :account-download-end events route via the same id-as-fallback trick.
 (defonce ^:private account-updates-rid (atom nil))
 
-;;; ── Parsers ─────────────────────────────────────────────────────────────────
 
 (defn ->contract
   "Build (or normalise) a contract map for ib-re-actor.
@@ -103,7 +101,6 @@
        "M" :months
        "Y" :years)]))
 
-;;; ── Pending registry + event listener ──────────────────────────────────────
 
 (def ^:private batch-terminal-event-types
   "Events that close out a BATCH request — TWS's `*-end` markers."
@@ -355,7 +352,6 @@
     (catch Throwable t
       (log/warnf t "handle-event! crashed on event %s" (:type event))))))
 
-;;; ── Connection lifecycle ────────────────────────────────────────────────────
 
 (defn- request-managed-accounts!
   "Explicit EClient.reqManagedAccts. IB also sends managedAccounts unsolicited
@@ -435,7 +431,6 @@
 (defn connect [host port client-id] (connect! host port client-id))
 (defn disconnect [] (disconnect!))
 
-;;; ── Snapshot normalisation ──────────────────────────────────────────────────
 ;;;
 ;;; req-market-data-snapshot returns a vector of opaque {:type :tick-price
 ;;; :field N :price V}-style events. The IBKR field codes are positional —
@@ -612,7 +607,6 @@
      ((cs-fn 'request-market-data-type) (:ecs conn) kw)
      kw)))
 
-;;; ── Request translation ────────────────────────────────────────────────────
 
 (defn- send-historical-bars [ecs {:keys [req-id contract bar-size duration what-to-show]}]
   (let [[bs bsu] (parse-bar-size bar-size)
@@ -732,7 +726,6 @@
   (swap! pending dissoc req-id)
   nil)
 
-;;; ── Dispatch helpers ───────────────────────────────────────────────────────
 
 (defn dispatch-batch!
   "Send a request in batch mode: accumulate events, fire cb once on terminal.
@@ -753,7 +746,6 @@
     (send-request! conn (assoc req :req-id id))
     id))
 
-;;; ── Request wrappers ────────────────────────────────────────────────────────
 
 (defn req-historical-bars
   "Request a historical bar series. 4-arg form defaults what-to-show to
@@ -906,7 +898,6 @@
   (dispatch-batch! conn {:type :req-news-article
                           :provider-code provider-code :article-id article-id} cb))
 
-;;; ── Orders ──────────────────────────────────────────────────────────────────
 
 (defn ->order
   "Build an IBKR Order map. Required keys: :action (:buy/:sell), :quantity.
@@ -958,7 +949,6 @@
   (swap! pending dissoc order-id)
   nil)
 
-;;; ── Foundation delegates + legacy shims ─────────────────────────────────────
 
 (defn pending-ids
   "Set of req-ids with an active callback registered (batch or stream)."

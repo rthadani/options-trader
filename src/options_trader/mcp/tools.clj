@@ -53,7 +53,6 @@
 (defn- no-ds-error [defaults]
   (merge {:error "no datasource"} defaults))
 
-;;; ── Tool handler registry ───────────────────────────────────────────────────
 
 (defn- handle-list-screens [ds _args]
   (if ds {:screens (screener/list-screens ds)} {:screens []}))
@@ -99,7 +98,6 @@
                             :order-id (:order_id args)})
     (orders-disabled)))
 
-;;; ── Research tool dispatch ──────────────────────────────────────────────────
 
 (def ^:private research-tool-specs
   "Spec for each research tool: the action type, arg mappings, and ctx-source key."
@@ -185,7 +183,6 @@
     (actions/handle-action (build-research-request spec args ctx))
     {:error (str "unknown research tool: " tool-name)}))
 
-;;; ── Main dispatch ───────────────────────────────────────────────────────────
 
 (def ^:private db-tool-handlers
   {"list_screens"  #'handle-list-screens

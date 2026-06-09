@@ -1,14 +1,7 @@
 (ns options-trader.data.sectors
-  "Skeleton namespace for GICS sector classification and rotation data.
-   Config key: :data-sources/:sectors
-   Protocol:   ISectorsSource — pluggable backend contract.
-
-   Loads without any network or file-system side-effects at namespace init time.
-   No ib-re-actor or HTTP calls are made until an implementation is registered
-   and explicitly invoked."
+  "Pluggable GICS sector / rotation source. Config key :data-sources/:sectors."
   )
 
-;;; ── Protocol ────────────────────────────────────────────────────────────────
 
 (defprotocol ISectorsSource
   "Pluggable source contract for GICS sector and industry classification.
@@ -26,7 +19,6 @@
   (normalise [this raw-record]
     "Normalise a raw sector classification record to canonical map form."))
 
-;;; ── Stub / unavailable implementation ──────────────────────────────────────
 
 (deftype UnavailableSectorsSource []
   ISectorsSource
@@ -39,7 +31,6 @@
   "Fallback source returned when no implementation is configured."
   (UnavailableSectorsSource.))
 
-;;; ── Dispatch ────────────────────────────────────────────────────────────────
 
 (defmulti make-source
   "Construct an ISectorsSource from a config map.
@@ -50,7 +41,6 @@
 (defmethod make-source :default [_cfg]
   default-source)
 
-;;; ── Public API (delegates to configured source) ─────────────────────────────
 
 (defn fetch-gics-classification
   "Fetch GICS sector classification for symbol using the configured source.

@@ -26,7 +26,6 @@
 
 (defn- now-ts [] (Timestamp. (System/currentTimeMillis)))
 
-;;; ── refresh_log row helpers ────────────────────────────────────────────────
 
 (defn- log-start! [ds task symbol]
   (let [id (q/next-refresh-log-id ds)]
@@ -56,7 +55,6 @@
                     (.getMessage t#))
          (throw t#)))))
 
-;;; ── Async helpers ──────────────────────────────────────────────────────────
 
 (defn- await-batch
   "Submit an async batch request and wait. Returns the events vector,
@@ -182,7 +180,6 @@
              :n-symbols  total
              :elapsed-ms (- (System/currentTimeMillis) start)))))
 
-;;; ── Bars (daily) — incremental ─────────────────────────────────────────────
 
 (defn latest-bar-date [ds sym]
   (q/latest-bar-date ds sym))
@@ -246,7 +243,6 @@
                      (log/warnf t "indicator recompute failed")
                      :error))))))))
 
-;;; ── Bars (intraday) — incremental ──────────────────────────────────────────
 
 (defn latest-intraday-ts [ds sym bar-size]
   (q/latest-intraday-ts ds sym bar-size))
@@ -307,7 +303,6 @@
                                            ds bar-size (map #(assoc % :symbol sym) bars))}
             :else                 nil))))))
 
-;;; ── News (headlines + sentiment) — incremental ─────────────────────────────
 
 (defn latest-news-published [ds sym]
   (q/latest-news-published ds sym))
@@ -362,7 +357,6 @@
                         sen (news/fetch-news-sentiment sym params src)]
                     {:rows (insert-news-rows! ds sym hs sen)}))))))))))
 
-;;; ── Fundamentals (EDGAR) ───────────────────────────────────────────────────
 
 (defn refresh-fundamentals!
   [{:keys [ds symbols]}]
@@ -375,7 +369,6 @@
                  (/ (- (System/currentTimeMillis) t0) 1000.0))
       r)))
 
-;;; ── Filings (EDGAR) — incremental ──────────────────────────────────────────
 
 (defn latest-filing-date [ds sym]
   (q/latest-filing-date ds sym))
@@ -412,7 +405,6 @@
                        :else           [])]
           {:rows (insert-filings! ds sym fs)})))))
 
-;;; ── Universes ──────────────────────────────────────────────────────────────
 
 (defn- current-members [ds u] (q/current-members ds u))
 
@@ -450,7 +442,6 @@
             :when (sequential? tickers)]
         [src (sync-universe! ds (name src) tickers)]))))
 
-;;; ── Portfolio ──────────────────────────────────────────────────────────────
 
 (defn refresh-portfolio!
   [{:keys [conn ds account-id]}]
@@ -460,7 +451,6 @@
                 conn ds)]
       (portfolio/refresh! src ds account-id))))
 
-;;; ── IV / HV daily history ──────────────────────────────────────────────────
 
 (defn- iv-duration-for-gap [last-d]
   (duration-for-gap* last-d "2 Y"))
@@ -639,7 +629,6 @@
                                            :hv30 (get hv-by-date d)}))
                   {:rows (count dates)}))))))))))
 
-;;; ── Short interest (Yahoo) ─────────────────────────────────────────────────
 
 (defn refresh-short-interest!
   "Per symbol: pull the latest short-interest snapshot from Yahoo's
@@ -656,7 +645,6 @@
             nil)
           nil)))))
 
-;;; ── Earnings (Yahoo) ───────────────────────────────────────────────────────
 
 (defn refresh-earnings!
   "Per symbol: pull historical EPS surprises (last ~4 quarters) into
@@ -674,7 +662,6 @@
             (q/upsert-earnings-calendar! ds cal))
           {:rows (+ (count (or hist [])) (if cal 1 0))})))))
 
-;;; ── Ping (smoke test) ──────────────────────────────────────────────────────
 
 (defn ping
   [{:keys [conn ds]}]

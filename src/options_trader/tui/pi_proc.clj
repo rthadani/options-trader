@@ -1,19 +1,9 @@
 (ns options-trader.tui.pi-proc
-  "Pi agent subprocess handling. Mirrors claude-proc but targets the pi CLI
-   (`pi -p --mode json`) instead of claude.
-
-   Pi is invoked with its defaults — user-level skills and extensions load
-   normally — plus a few options-trader-specific overrides:
-     --session-dir <path> per-product session storage so per-scope chat
-                          resume doesn't collide with the user's other pi work
-     --mcp-config <path>  load options-trader's MCP server (handled by pi's
-                          built-in mcp-bridge extension)
-     --skill <path>       each options-trader skill, added on top of any
-                          user-level skills the pi defaults already load
-
-   We do NOT pass --no-extensions (would disable mcp-bridge → pi rejects
-   --mcp-config) or --no-skills (no upside; explicit --skill paths layer on
-   regardless)."
+  "Pi-CLI subprocess (`pi -p --mode json`). Mirrors claude-proc, with pi's
+   defaults intact plus three overrides: --session-dir for isolated per-scope
+   resume, --mcp-config for the options-trader MCP server, and explicit
+   --skill paths layered on top. Never --no-extensions (would disable
+   mcp-bridge) or --no-skills."
   (:require [cheshire.core         :as json]
             [clojure.java.io       :as io]
             [clojure.string        :as str]
@@ -51,7 +41,6 @@
      :env {}
      :cwd cwd}))
 
-;;; ── Stream-json parsing (pi --mode json) ──────────────────────────────────
 
 (defn agent-end-line?
   "Returns true if the line is pi's terminal agent_end event."

@@ -1,18 +1,15 @@
 (ns options-trader.indicators.runner-test
-  "Integration tests for the ta4j-driven indicator runner.
-   Each test creates its own in-memory DuckDB so state never leaks between tests."
+  "Integration tests for the ta4j-driven runner; per-test in-memory DuckDB."
   (:require [clojure.test :refer [deftest is testing]]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
             [options-trader.indicators.runner :as runner]
             [options-trader.test-util :as tu]))
 
-;;; ── Test helpers ────────────────────────────────────────────────────────────
 
 (defn- seed! [ds sym]
   (tu/seed-ohlcv! ds sym tu/raw-bars))
 
-;;; ── Tests ───────────────────────────────────────────────────────────────────
 
 (deftest rsi-14-is-100-for-monotone-series
   (testing "rsi_14 = 100.0 for strictly-increasing 50-bar series (all gains, no losses)"
