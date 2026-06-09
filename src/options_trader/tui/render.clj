@@ -2,7 +2,8 @@
   "Pure functions that turn a state map + terminal dimensions into a string
    for charm.clj's view function."
   (:require [clojure.string :as str]
-            [options-trader.tui.markdown :as md]))
+            [options-trader.tui.markdown :as md]
+            [options-trader.tui.watchlist :as watchlist]))
 
 (defn- pad [s n]
   (let [s    (str (or s ""))
@@ -98,21 +99,38 @@
          width)))
 
 (defn- portfolio-table-header [width]
-  (pad " Sym          Qty       Mkt       Avg       P&L        P&L%" width))
+  (pad " Sym              Qty       Mkt       Avg       P&L        P&L%" width))
+
+(defn- short-expiry
+  "Compact MMdd string for an option expiry LocalDate, or nil for the
+   1900-01-01 sentinel used on stock positions."
+  [d]
+  (when (and (instance? java.time.LocalDate d)
+             (>= (.getYear ^java.time.LocalDate d) 2000))
+    (.format ^java.time.LocalDate d
+             (java.time.format.DateTimeFormatter/ofPattern "MMdd"))))
 
 (defn- format-position [{:keys [symbol opt-right strike expiry qty avg-cost market-value unrealized-pnl]}
                         width]
-  (let [label  (str symbol
-                   (when (and opt-right (seq opt-right))
-                     (str " " opt-right " $" (fnum strike 0))))
+  (let [exp    (short-expiry expiry)
+        ;; For options, pack expiry + right + strike into the symbol slot
+        ;; ("NVDA 0117C200") so the user can tell which leg of a chain a
+        ;; row is — without it, every option on the same underlier reads
+        ;; identically. Stocks get just the ticker.
+        label  (cond
+                 (and opt-right (seq opt-right) exp)
+                 (str symbol " " exp opt-right (some-> strike long))
+                 (and opt-right (seq opt-right))
+                 (str symbol " " opt-right "$" (fnum strike 0))
+                 :else symbol)
         mkt-px (when (and market-value qty (pos? qty))
                  (/ (double market-value) (double qty)))
         base   (when (and avg-cost qty (pos? qty))
                  (* (double avg-cost) (double qty)))
         pnl-pct (when (and unrealized-pnl base (pos? base))
                   (format "%.1f%%" (* 100.0 (/ (double unrealized-pnl) base))))]
-    (pad (format " %-10s %6s %10s %10s %10s %8s"
-                 (subs label 0 (min 10 (count label)))
+    (pad (format " %-14s %6s %10s %10s %10s %8s"
+                 (subs label 0 (min 14 (count label)))
                  (or (and qty (pos? qty) (str qty)) "")
                  (fnum mkt-px 2)
                  (fnum avg-cost 2)
@@ -195,7 +213,18 @@
         top-line  (str "─" (apply str (repeat (dec width) \─)))
         bot-line  (str "─" (apply str (repeat (dec width) \─)))
 
-        port-lines (vec (portfolio-lines state width port-h))
+        ;; The watchlist column lives to the right of the portfolio pane.
+        ;; Only show it when the terminal is wide enough that the portfolio
+        ;; still has at least 40 chars to work with — otherwise drop the
+        ;; pane and give all the width back to the portfolio.
+        wl-want   (watchlist/panel-width)
+        show-wl?  (>= (- width wl-want 1) 40)
+        port-w    (if show-wl? (- width wl-want 1) width)
+        port-only (vec (portfolio-lines state port-w port-h))
+        port-lines (if-not show-wl?
+                     port-only
+                     (let [wl (watchlist/panel-lines state port-h)]
+                       (mapv (fn [p w] (str p "│" w)) port-only wl)))
         all-lines  (mapcat #(message-lines % width) (:messages state))
         all-v      (vec all-lines)
         total-lines (count all-v)

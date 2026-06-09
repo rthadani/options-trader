@@ -25,6 +25,7 @@
             [options-trader.tui.render :as render-ui]
             [options-trader.tui.slash :as opts-slash]
             [options-trader.tui.state :as st]
+            [options-trader.tui.watchlist :as watchlist]
             [options-trader.util :as util]
             [options-trader.indicators.engine :as indicators]
             [options-trader.screener.registry :as screener]
@@ -647,6 +648,49 @@
   (swap! st/state assoc :scope :scratch)
   (st/append-chat! :system "scope = scratch"))
 
+(defn handle-add-to-watchlist [args ds]
+  (let [sym (opts-slash/normalise-symbol (first args))]
+    (if-not sym
+      (st/append-chat! :system "usage: /add-to-watchlist <SYMBOL>")
+      (let [conn (tui-ibkr/current-conn)
+            res  (watchlist/add! {:ds ds :conn conn :sym sym})]
+        (case (or (:error res) :ok)
+          :ok
+          (do (watchlist/persist!)
+              (st/append-chat! :system (str "watching " (:sym res))))
+
+          :already-watching
+          (st/append-chat! :system (str (:sym res) " is already on the watchlist"))
+
+          :cap-reached
+          (st/append-chat! :system
+            (str "watchlist is full (max " (:max res) " symbols) — "
+                 "remove one with /remove-from-watchlist first"))
+
+          :not-connected
+          (st/append-chat! :system "not connected to TWS — /connect first")
+
+          :bad-symbol
+          (st/append-chat! :system "usage: /add-to-watchlist <SYMBOL>")
+
+          (st/append-chat! :system (str "watchlist error: " (pr-str res))))))))
+
+(defn handle-remove-from-watchlist [args _ds]
+  (let [sym (opts-slash/normalise-symbol (first args))]
+    (if-not sym
+      (st/append-chat! :system "usage: /remove-from-watchlist <SYMBOL>")
+      (let [res (watchlist/remove! {:conn (tui-ibkr/current-conn) :sym sym})]
+        (if (:error res)
+          (st/append-chat! :system (str sym " is not on the watchlist"))
+          (do (watchlist/persist!)
+              (st/append-chat! :system (str "unwatched " (:sym res)))))))))
+
+(defn handle-watchlist [_args _ds]
+  (let [wl (:watchlist @st/state)]
+    (if (empty? wl)
+      (st/append-chat! :system "watchlist is empty — /add-to-watchlist <SYM>")
+      (st/append-chat! :system (str "watching: " (clojure.string/join " " wl))))))
+
 (defn handle-reset [_args _ds]
   (let [scope (:scope @st/state)]
     (conv/clear-claude-session! scope)
@@ -803,6 +847,9 @@
        "                                  (auto-triggers when scope tokens exceed 100k)"
        "  /sessions                       list on-disk transcripts (both agents)"
        "  /sessions resume <n>            resume the n-th transcript from /sessions"
+       "  /add-to-watchlist <SYM>         stream live quotes for SYM in the right pane"
+       "  /remove-from-watchlist <SYM>    drop SYM from the watchlist"
+       "  /watchlist                      list current watchlist symbols"
        ""
        "Hybrid (TUI side-effect + tells the agent):"
        "  /investigate <SYM>              focus scope on SYM + ask agent for overview"
@@ -839,6 +886,9 @@
    "/reset"               handle-reset
    "/compact"             handle-compact
    "/sessions"            handle-sessions
+   "/add-to-watchlist"      handle-add-to-watchlist
+   "/remove-from-watchlist" handle-remove-from-watchlist
+   "/watchlist"             handle-watchlist
    "/help"                handle-help})
 
 (def ^:private hybrid-commands
@@ -1060,6 +1110,26 @@
                  (a/put! refresh-chan :refresh))))
   (st/load-input-history!)
   (st/load-tui-prefs!)
+  ;; Pull the persisted watchlist symbol list into memory immediately so
+  ;; the panel renders even before TWS is up. Streams get re-attached the
+  ;; first time the connection flips to :connected — see the watch below.
+  (swap! st/state assoc :watchlist (watchlist/load-symbols))
+  (remove-watch st/state ::watchlist-resubscribe)
+  (add-watch st/state ::watchlist-resubscribe
+             (fn [_ _ old new]
+               (when (and (not= :connected (:tws-status old))
+                          (= :connected (:tws-status new))
+                          (seq (:watchlist new))
+                          (empty? (:watchlist-subs new)))
+                 (let [syms (vec (:watchlist new))]
+                   ;; Drop the in-memory list so add! doesn't reject as
+                   ;; already-watching, then resubscribe each.
+                   (swap! st/state assoc :watchlist [])
+                   (future
+                     (doseq [s syms]
+                       (watchlist/add! {:ds   @ds-atom
+                                        :conn (tui-ibkr/current-conn)
+                                        :sym  s})))))))
   ;; Sync the loaded agent/provider/model into llm's atoms so the first spawn
   ;; reads the persisted choice — state.clj loads into the state atom, but the
   ;; spawn paths also consult llm/active-* atoms for defaults.

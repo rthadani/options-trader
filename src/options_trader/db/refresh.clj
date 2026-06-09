@@ -435,7 +435,14 @@
     {:added (count added) :removed (count removed) :total (count next)}))
 
 (defn refresh-universes!
-  [{:keys [ds sources] :or {sources [:sp500 :nasdaq100]}}]
+  "Sync universe memberships into universe_members + write drift log.
+
+   With no :sources opt, refreshes every known source — built-in fetched
+   (sp500, nasdaq100) AND any user-defined static universes the user has
+   dropped at <config-root>/universes/<name>.edn. Pass :sources to refresh
+   a subset (e.g. [:sp500] for just the index, [:my-bench] for just one
+   custom file)."
+  [{:keys [ds sources] :or {sources (universes/all-source-keys)}}]
   (with-log ds :universes nil
     (into {}
       (for [src sources
@@ -474,21 +481,57 @@
                       {:host host :port port :client-id client-id})))
     c))
 
+(def ^:private hist-batch-size
+  "Cycle the IB connection after this many historical-bar requests so we
+   never even brush IB's 60-per-10-min wall. 50 leaves a 10-slot buffer
+   for transient sharing with other historical callers; tune lower if
+   you see the pacer flag a near-miss before the cycle fires."
+  50)
+
 (defn- ib-iv-bars
-  [conn-atom ibkr-cfg sym duration timeout-ms]
-  (when-not (pacer/can-request-historical? pacer/default-pacer sym "1 day")
+  "Fetch IV bars for sym, returning the bars vec, :unavailable, or
+   ::timeout.
+
+   Strategy: deterministic batching. We keep a counter of historical
+   requests on the current connection and proactively disconnect +
+   reconnect once it reaches hist-batch-size, before any IB-side rate
+   limit fires. The reactive paths (pacer-detected wall, await-batch
+   timeout) are kept as a safety net for cases where the counter is
+   off (e.g. other code reuses the same conn) — they also reset the
+   batch counter so the next cycle starts fresh.
+
+   When :ibkr-config isn't supplied (cron without reconnect creds), the
+   old behaviour stands: block on pacer/await-hist-slot!."
+  [conn-atom count-atom ibkr-cfg sym duration timeout-ms]
+  (cond
+    (and ibkr-cfg (>= @count-atom hist-batch-size))
+    (do (log/infof "iv-daily: cycling connection after %d requests in this batch"
+                   @count-atom)
+        (reset! conn-atom (ib-reconnect! ibkr-cfg))
+        (reset! count-atom 0))
+
+    (not (pacer/can-request-historical? pacer/default-pacer sym "1 day"))
     (if ibkr-cfg
-      (reset! conn-atom (ib-reconnect! ibkr-cfg))
+      (do (log/infof "iv-daily: pacer flagged wall before scheduled cycle — reconnecting now")
+          (reset! conn-atom (ib-reconnect! ibkr-cfg))
+          (reset! count-atom 0))
       (do (log/infof "iv-daily: %s waiting for IB slot (%d/%d used in 10-min window)"
                      sym (pacer/hist-global-count) 60)
           (pacer/await-hist-slot! pacer/default-pacer sym "1 day"))))
-  (await-batch
-    (fn [cb]
-      (ibkr/req-historical-bars
-        @conn-atom (ibkr/->contract sym) "1 day" duration
-        :option-implied-volatility cb))
-    timeout-ms
-    (fn [rid] (ibkr/cancel-sub! @conn-atom rid))))
+  (swap! count-atom inc)
+  (let [result (await-batch
+                 (fn [cb]
+                   (ibkr/req-historical-bars
+                     @conn-atom (ibkr/->contract sym) "1 day" duration
+                     :option-implied-volatility cb))
+                 timeout-ms
+                 (fn [rid] (ibkr/cancel-sub! @conn-atom rid)))]
+    (if (and (= ::timeout result) ibkr-cfg)
+      (do (log/infof "iv-daily: %s timed out — reconnecting to reset IB's window" sym)
+          (reset! conn-atom (ib-reconnect! ibkr-cfg))
+          (reset! count-atom 0)
+          ::timeout)
+      result)))
 
 (defn- bars-close-series [ds sym]
   (->> (jdbc/execute! ds
@@ -509,15 +552,28 @@
                   (max 1 (dec n)))]
       (* (Math/sqrt var) (Math/sqrt 252)))))
 
-(defn- hv30-by-date [rows]
-  (let [closes (mapv :close rows)
-        dates  (mapv (comp ->iso-date :bar_date) rows)
-        n      (count closes)]
-    (->> (range 31 (inc n))
-         (keep (fn [i]
-                 (when-let [v (annualised-stddev (subvec closes (- i 31) i))]
-                   [(nth dates (dec i)) v])))
-         (into {}))))
+(defn- hv30-by-date
+  "Compute HV30 (annualised stddev of log returns × √252) per date from
+   the input bar rows.
+
+   2-arity form: skip windows whose end-date is on or before `since`
+   (any ISO date / LocalDate). Used for routine refreshes so we don't
+   re-emit ~1200 unchanged HV30 entries every run — only the gap since
+   the last persisted iv_date gets new HV30 values."
+  ([rows] (hv30-by-date rows nil))
+  ([rows since]
+   (let [closes  (mapv :close rows)
+         dates   (mapv (comp ->iso-date :bar_date) rows)
+         n       (count closes)
+         since'  (some-> since str)]
+     (->> (range 31 (inc n))
+          (keep (fn [i]
+                  (let [d (nth dates (dec i))]
+                    (when (or (nil? since')
+                              (pos? (compare d since')))
+                      (when-let [v (annualised-stddev (subvec closes (- i 31) i))]
+                        [d v])))))
+          (into {})))))
 
 (defn- index-by-date [bars]
   (into {}
@@ -554,20 +610,27 @@
   (with-log ds :iv-daily nil
     (binding [*parallelism* (if ibkr-config 1 (min *parallelism* 4))
               *fail-fast-consecutive* 25]
-      (let [conn-atom (atom conn)]
+      (let [conn-atom  (atom conn)
+            count-atom (atom 0)]
         (each-symbol! :iv-daily symbols
           (fn [sym]
             (if (iv-is-fresh? ds sym)
               {:rows 0}
               (let [last-d (q/latest-iv-date ds sym)
                     dur    (iv-duration-for-gap last-d)
-                    iv     (ib-iv-bars conn-atom ibkr-config sym dur timeout-ms)]
+                    iv     (ib-iv-bars conn-atom count-atom ibkr-config
+                                       sym dur timeout-ms)]
               (cond
                 (= :unavailable iv) :unavailable
                 (= ::timeout    iv) {:timeout? true}
                 :else
                 (let [iv-by-date (index-by-date iv)
-                      hv-by-date (hv30-by-date (bars-close-series ds sym))
+                      ;; First-time backfill (no prior iv_daily rows for sym)
+                      ;; → full HV30 history. Routine refresh → only dates
+                      ;; after the most recent iv_date we have. Cuts the
+                      ;; per-symbol upsert from ~1231 rows to a handful.
+                      hv-by-date (hv30-by-date (bars-close-series ds sym)
+                                               last-d)
                       dates      (into (sorted-set) (concat (keys iv-by-date)
                                                             (keys hv-by-date)))]
                   (doseq [d dates]

@@ -91,3 +91,57 @@
   (testing "seed-builtins! throws until Phase 3"
     (is (thrown? UnsupportedOperationException (u/seed-builtins!))
         "seed-builtins! must throw UnsupportedOperationException in Phase 2")))
+
+;;; ── User-defined static universes ───────────────────────────────────────────
+
+(defn- write-tmp-universe! [^java.io.File dir name content]
+  (.mkdirs dir)
+  (let [f (java.io.File. dir (str name ".edn"))]
+    (spit f content)
+    f))
+
+(defn- with-temp-config-root
+  "Run f with config-root pinned to a fresh temp dir. Cleans up after."
+  [f]
+  (let [root (doto (java.io.File/createTempFile "ot-univ-test-" "") .delete .mkdirs)]
+    (try
+      (binding [options-trader.paths/*config-root-override* (.getAbsolutePath root)]
+        (f root))
+      (finally
+        (doseq [^java.io.File x (reverse (file-seq root))] (.delete x))))))
+
+(deftest user-universes-load-vector-form
+  (with-temp-config-root
+    (fn [_root]
+      (let [u-dir (java.io.File. (options-trader.paths/user-universes-dir))]
+        (write-tmp-universe! u-dir "my-bench"    "[\"AAPL\" \"NVDA\" \"MPWR\"]")
+        (write-tmp-universe! u-dir "research"    "{:symbols [\"TSLA\" \"GOOGL\"]}")
+        (write-tmp-universe! u-dir "alt-tickers" "{:tickers [\"SPY\" \"QQQ\"]}")
+        (write-tmp-universe! u-dir "empty"       "[]")
+        (write-tmp-universe! u-dir "garbage"     "{not valid edn")
+        (let [loaded (u/load-user-universes)]
+          (is (= ["AAPL" "NVDA" "MPWR"] (loaded :my-bench)))
+          (is (= ["TSLA" "GOOGL"]       (loaded :research)))
+          (is (= ["SPY"  "QQQ"]         (loaded :alt-tickers))
+              ":tickers key is accepted as a :symbols alias")
+          (is (not (contains? loaded :empty))   "empty vec is dropped")
+          (is (not (contains? loaded :garbage)) "unparseable file is silently skipped"))))))
+
+(deftest user-universes-shadow-builtin
+  (with-temp-config-root
+    (fn [_root]
+      (let [u-dir (java.io.File. (options-trader.paths/user-universes-dir))]
+        (write-tmp-universe! u-dir "sp500" "[\"PINNED1\" \"PINNED2\"]")
+        (is (= ["PINNED1" "PINNED2"] (u/fetch-source :sp500))
+            "user file with same name as a built-in source wins without network")))))
+
+(deftest all-source-keys-merges-builtin-and-user
+  (with-temp-config-root
+    (fn [_root]
+      (let [u-dir (java.io.File. (options-trader.paths/user-universes-dir))]
+        (write-tmp-universe! u-dir "my-bench" "[\"AAPL\"]")
+        (let [ks (set (u/all-source-keys))]
+          (is (contains? ks :sp500)     "built-in surfaces")
+          (is (contains? ks :nasdaq100) "built-in surfaces")
+          (is (contains? ks :my-bench)  "user file surfaces"))))))
+

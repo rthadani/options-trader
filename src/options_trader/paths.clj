@@ -102,6 +102,21 @@
   []
   (str (config-root) "/tui-prefs.edn"))
 
+(defn watchlist-file
+  "Symbols the user has /add-to-watchlist'd, persisted as an EDN vector so
+   the TUI re-subscribes to the same set on restart."
+  []
+  (str (config-root) "/watchlist.edn"))
+
+(defn user-universes-dir
+  "Directory the user drops custom-universe EDN files into. Each
+   <name>.edn contributes a `<name>` universe whose membership lands in
+   universe_members on the next `refresh-universes`. Sits alongside the
+   built-in fetched universes (:sp500, :nasdaq100) — no overrides, just
+   addition."
+  []
+  (str (config-root) "/universes"))
+
 (defn ensure-dir!
   "Create path (and parents) if missing. Returns the absolute path."
   [^String path]

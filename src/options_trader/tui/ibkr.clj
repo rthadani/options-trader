@@ -288,6 +288,12 @@
   (st/set-tws-status! :disconnected)
   (log-message! "disconnected"))
 
+(defn current-conn
+  "Live IB client object, or nil. Read-only accessor — mutations go
+   through connect!/disconnect!."
+  []
+  @conn-atom)
+
 (defn connected? []
   (some? @conn-atom))
 

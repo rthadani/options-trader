@@ -105,8 +105,8 @@
 
 ;;; ── Pending registry + event listener ──────────────────────────────────────
 
-(def ^:private terminal-event-types
-  "Events that close out a batch — explicit `*-end` markers from TWS."
+(def ^:private batch-terminal-event-types
+  "Events that close out a BATCH request — TWS's `*-end` markers."
   #{:historical-data-end
     :historical-news-end
     :contract-details-end
@@ -115,6 +115,14 @@
     :account-summary-end
     :scanner-data-end
     :security-definition-optional-parameter-end})
+
+(def ^:private stream-terminal-event-types
+  "Same set MINUS :tick-snapshot-end. IB sends tick-snapshot-end on both
+   snapshot and streaming requests — for the latter it means 'initial state
+   delivered, live updates follow', NOT 'request finished'. Treating it as
+   terminal for streaming subs unregisters the cb and silently drops every
+   subsequent live tick."
+  (disj batch-terminal-event-types :tick-snapshot-end))
 
 (def ^:private single-shot-event-types
   "Events that are both the data and the terminal — TWS sends one and is done.
@@ -290,8 +298,13 @@
                                   :update-account-time :account-download-end}
                                 t)
                           @account-updates-rid))
-          terminal? (contains? terminal-event-types t)
-          entry     (when rid (get @pending rid))]
+          entry     (when rid (get @pending rid))
+          ;; tick-snapshot-end is terminal only for batch mode; see
+          ;; stream-terminal-event-types for the rationale.
+          terminal? (contains? (if (= :stream (:mode entry))
+                                 stream-terminal-event-types
+                                 batch-terminal-event-types)
+                               t)]
       (when (= t :managed-accounts) (capture-managed-accounts! event))
       (when-let [tap @event-tap]
         (swap! tap update :events

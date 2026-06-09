@@ -1,13 +1,22 @@
 (ns options-trader.data.universes
   "Config-driven ticker-list fetcher with symbol normalisation.
-   Sources are declared in resources/universes/sources.edn;
-   normalisation rules live in resources/universes/symbol-rules.edn.
+
+   Three sources of universes:
+   - Built-in fetched (resources/universes/sources.edn) — sp500/nasdaq100
+     etc., scraped from Wikipedia.
+   - User-defined static (<config-root>/universes/<name>.edn) — bare
+     vectors or {:symbols [...]} maps, no network. Hot-loaded; whatever's
+     on disk at refresh time wins.
+   - Normalisation rules (resources/universes/symbol-rules.edn) apply to
+     all of the above so 'BRK.B' becomes whatever IB wants.
 
    Pure path (extract-tickers + normalise-symbol) is fixture-testable;
    fetch-and-normalise calls http-kit only when given a real URL."
   (:require [clojure.java.io :as io]
             [clojure.edn :as edn]
             [clojure.string :as str]
+            [options-trader.paths :as paths]
+            [options-trader.util :as util]
             [org.httpkit.client :as http]
             [net.cgrand.enlive-html :as html]))
 
@@ -142,17 +151,60 @@
 
 ;;; ── Source-config API ───────────────────────────────────────────────────────
 
+(defn- extract-static-symbols
+  "Coerce a user-universe file's contents into a normalised symbol vector,
+   or nil when the file is unparseable / empty.
+
+   Accepted shapes:
+     [\"AAPL\" \"NVDA\"]
+     {:symbols [\"AAPL\" \"NVDA\"]}
+     {:tickers [\"AAPL\" \"NVDA\"]}"
+  [data]
+  (let [raw (cond
+              (sequential? data)         data
+              (map? data)                (or (:symbols data) (:tickers data))
+              :else                      nil)]
+    (when (and (sequential? raw) (every? string? raw))
+      (let [normed (normalise-symbols raw)]
+        (when (seq normed) normed)))))
+
+(defn load-user-universes
+  "Scan <config-root>/universes/ for *.edn and return {source-key vector}.
+   The filename (sans .edn) becomes the source key — `mom-bench.edn`
+   becomes `:mom-bench`. Files that fail to read or contain no symbols
+   are silently skipped — same swallow-and-continue posture as the rest
+   of the loader path."
+  []
+  (let [dir (io/file (paths/user-universes-dir))]
+    (when (.isDirectory dir)
+      (into {}
+        (keep (fn [^java.io.File f]
+                (when (and (.isFile f)
+                           (str/ends-with? (.getName f) ".edn"))
+                  (let [name-kw (-> (.getName f)
+                                    (str/replace #"\.edn$" "")
+                                    keyword)
+                        data    (util/safe-edn-read (slurp f))
+                        syms    (extract-static-symbols data)]
+                    (when syms [name-kw syms])))))
+        (.listFiles dir)))))
+
 (defn fetch-source
   "Fetch and normalise tickers for the given source key (e.g. :sp500).
-   Returns a normalised vector of ticker strings, or :unavailable on error."
+   Returns a normalised vector of ticker strings, or :unavailable on error.
+
+   User-defined universes (files under <config-root>/universes/) shadow
+   built-in fetched ones with the same key — useful for pinning a frozen
+   snapshot of sp500 during a backtest without losing the source code."
   [source-key & {:keys [timeout-ms] :or {timeout-ms 15000}}]
-  (let [cfg (get @sources source-key)]
-    (if-not cfg
-      (do (println "Unknown source:" source-key) :unavailable)
-      (fetch-and-normalise (:url cfg)
-                           (or (:ticker-column cfg) 0)
-                           {:timeout-ms      timeout-ms
-                            :header-contains (:header-contains cfg)}))))
+  (or (get (load-user-universes) source-key)
+      (let [cfg (get @sources source-key)]
+        (if-not cfg
+          (do (println "Unknown source:" source-key) :unavailable)
+          (fetch-and-normalise (:url cfg)
+                               (or (:ticker-column cfg) 0)
+                               {:timeout-ms      timeout-ms
+                                :header-contains (:header-contains cfg)})))))
 
 (defn ticker-fetch
   "Alias for fetch-source — delegates by source key."
@@ -169,11 +221,21 @@
   []
   (fetch-source :nasdaq100))
 
+(defn all-source-keys
+  "Every source the refresh path knows about — built-in fetched +
+   user-defined static. Used as the default source list when nothing
+   else is specified."
+  []
+  (-> (set (keys @sources))
+      (into (keys (load-user-universes)))
+      sort
+      vec))
+
 (defn fetch-all
-  "Fetch and merge tickers from all configured sources.
+  "Fetch and merge tickers from all known sources (built-in + user).
    Skips any source that returns :unavailable."
   []
-  (->> (keys @sources)
+  (->> (all-source-keys)
        (map fetch-source)
        (remove #{:unavailable})
        (apply concat)

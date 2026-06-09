@@ -38,6 +38,13 @@
    ;; ── Terminal dims, refreshed on WINCH ──────────────────────────────────
    :width            80
    :height           24
+   ;; Watchlist — user-curated live quotes, separate from held positions
+   ;; and the active investigation symbol. Stream subs are tagged
+   ;; :watchlist in the sub manager so the budget is auditable.
+   :watchlist        []   ;; ordered seq of upper-cased symbol strings
+   :watchlist-quotes {}   ;; sym → {:last :bid :ask :bid-size :ask-size
+                          ;;        :volume :avg-volume :updated-at}
+   :watchlist-subs   {}   ;; sym → req-id (for cancel on remove)
    ;; ── IB streaming bookkeeping (moved here from scattered defonces) ──────
    :stream {:pnl-rid          nil
             :pnl-single-rids  {}              ;; conid → req-id
