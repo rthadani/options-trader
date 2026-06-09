@@ -53,14 +53,18 @@
   (is (= [] (wl/load-symbols))
       "empty watchlist round-trips as []"))
 
+;; Row layout in panel-lines (per `top-gap` reserved row):
+;;   row 0 — empty top-gap (aligns watchlist below the portfolio status row)
+;;   row 1 — table header (SYM LAST CHG% …)
+;;   row 2+ — quote rows
+
 (deftest panel-lines-renders-persisted-symbols-without-quotes
   ;; The case where TWS hasn't connected yet: symbols loaded from disk
   ;; but no quotes have arrived. Each row should still render with the
   ;; symbol visible and dashes in every numeric column.
   (swap! st/state assoc :watchlist ["AAPL" "NVDA"] :watchlist-quotes {})
-  (let [lines (wl/panel-lines @st/state 5)
-        body  (rest lines)]                   ; drop header
-    (is (= 4 (count body)) "body rows = height - 1 for header")
+  (let [lines (wl/panel-lines @st/state 6)
+        body  (drop 2 lines)]                  ; drop top-gap + header
     (is (clojure.string/starts-with? (first body)  "AAPL"))
     (is (clojure.string/starts-with? (second body) "NVDA"))
     (testing "no-quote rows render dashes, not crash"
@@ -76,14 +80,14 @@
                           "DN"   {:last  98.0 :close 100.0}
                           "FLAT" {:last 100.0 :close 100.0}
                           "NONE" {:last 50.0}}))
-        rows (wl/panel-lines state 5)]
-    (is (clojure.string/includes? (nth rows 1) (str esc "32m"))
+        rows (wl/panel-lines state 7)]        ; top-gap + header + 4 quotes + slack
+    (is (clojure.string/includes? (nth rows 2) (str esc "32m"))
         "up row coloured green")
-    (is (clojure.string/includes? (nth rows 2) (str esc "31m"))
+    (is (clojure.string/includes? (nth rows 3) (str esc "31m"))
         "down row coloured red")
-    (is (not (clojure.string/includes? (nth rows 3) esc))
-        "flat row has no ANSI colouring")
     (is (not (clojure.string/includes? (nth rows 4) esc))
+        "flat row has no ANSI colouring")
+    (is (not (clojure.string/includes? (nth rows 5) esc))
         "row with no :close gets the '-' placeholder, no colour")))
 
 (deftest panel-lines-empty-watchlist-renders-placeholder
@@ -91,9 +95,10 @@
   ;; on every fresh launch with no symbols. The placeholder row should
   ;; render, not throw.
   (swap! st/state assoc :watchlist [] :watchlist-quotes {})
-  (let [lines (wl/panel-lines @st/state 4)]
-    (is (= 4 (count lines)) "height honoured even when watchlist is empty")
-    (is (clojure.string/includes? (second lines) "/add-to-watchlist")
+  (let [lines (wl/panel-lines @st/state 5)]
+    (is (= 5 (count lines)) "height honoured even when watchlist is empty")
+    ;; Top-gap (row 0), header (row 1), placeholder (row 2).
+    (is (clojure.string/includes? (nth lines 2) "/add-to-watchlist")
         "placeholder row points the user at the slash command")))
 
 ;; update-quote: pure tick → quote-map folder. Locks the field-code map so

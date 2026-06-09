@@ -45,6 +45,11 @@
    :watchlist-quotes {}   ;; sym → {:last :bid :ask :bid-size :ask-size
                           ;;        :volume :avg-volume :updated-at}
    :watchlist-subs   {}   ;; sym → req-id (for cancel on remove)
+   ;; Scroll offsets for the portfolio + watchlist panes. Tab cycles
+   ;; focus through :input → :chat → :portfolio → :watchlist; PageUp/
+   ;; PageDown act on whichever pane is currently focused.
+   :portfolio-offset 0
+   :watchlist-offset 0
    ;; ── IB streaming bookkeeping (moved here from scattered defonces) ──────
    :stream {:pnl-rid          nil
             :pnl-single-rids  {}              ;; conid → req-id
@@ -264,8 +269,27 @@
 (defn quit! []
   (swap! state assoc :exit? true))
 
+(def focus-cycle
+  "Order Tab walks focused panes. PageUp/PageDown route to the pane
+   currently in focus (see process-key in tui.main)."
+  [:input :chat :portfolio :watchlist])
+
 (defn toggle-focus! []
-  (swap! state update :focus #(if (= :input %) :chat :input)))
+  (swap! state update :focus
+         #(let [idx (.indexOf ^java.util.List focus-cycle %)
+                next-idx (mod (inc (max 0 idx)) (count focus-cycle))]
+            (nth focus-cycle next-idx))))
+
+(defn adjust-portfolio-scroll!
+  "Bump portfolio offset by `delta`. Clamped to 0 here; upper clamp
+   in render where the row count is known."
+  [delta]
+  (swap! state update :portfolio-offset #(max 0 (+ (or % 0) delta))))
+
+(defn adjust-watchlist-scroll!
+  "Bump watchlist offset by `delta`."
+  [delta]
+  (swap! state update :watchlist-offset #(max 0 (+ (or % 0) delta))))
 
 (defn persist-input-history!
   "Write the current history vector to <config-root>/input-history.edn.

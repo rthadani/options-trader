@@ -1006,12 +1006,22 @@
       (= :escape k)
       (cancel-running-agent!)
 
-      ;; PgUp/PgDn scroll the chat from ANY focus, not just chat focus —
-      ;; people in mid-conversation shouldn't have to Tab away to read.
-      (= :page-up k)   (st/adjust-scroll! (- @state-height))
-      (= :page-down k) (st/adjust-scroll! @state-height)
+      ;; PgUp/PgDn route to whichever pane currently has focus. With
+      ;; :input or :chat focus they walk the chat; with :portfolio or
+      ;; :watchlist focus they walk that table.
+      (= :page-up k)
+      (case focus
+        :portfolio (st/adjust-portfolio-scroll! (- (max 1 (int (* @state-height 0.4)))))
+        :watchlist (st/adjust-watchlist-scroll! (- (max 1 (int (* @state-height 0.4)))))
+        (st/adjust-scroll! (- @state-height)))
 
-      ;; Tab toggles focus
+      (= :page-down k)
+      (case focus
+        :portfolio (st/adjust-portfolio-scroll! (max 1 (int (* @state-height 0.4))))
+        :watchlist (st/adjust-watchlist-scroll! (max 1 (int (* @state-height 0.4))))
+        (st/adjust-scroll! @state-height))
+
+      ;; Tab cycles focus :input → :chat → :portfolio → :watchlist → :input.
       (= :tab k)
       (do (st/toggle-focus!)
           (swap! st/state assoc :scroll-offset 0))

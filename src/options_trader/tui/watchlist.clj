@@ -7,7 +7,8 @@
    avg-volume isn't part of the tick stream — it comes from
    latest_indicators.avg_vol_20d, refreshed daily by the indicator runner.
    We snapshot it once on add and keep it static for the session."
-  (:require [clojure.java.io :as io]
+  (:require [charm.components.table :as ct]
+            [clojure.java.io :as io]
             [clojure.string  :as str]
             [options-trader.data.ibkr :as ibkr]
             [options-trader.db.queries.watchlist :as q]
@@ -255,40 +256,38 @@
             :else (format "%.0f" (double v)))]
     (pad-row s width)))
 
-(def ^:private col-widths
-  "Symbol, last, %chg-vs-prev-close, bid, ask, bidSz, askSz, vol, avgVol.
-   The chg-pct column slots between LAST and BID so the price + its
-   movement read as a pair."
-  {:sym 6 :last 8 :chg 7 :bid 8 :ask 8 :bid-sz 6 :ask-sz 6 :vol 7 :avg 7})
+(def ^:private columns
+  "Watchlist columns. Widths sum to 63; charm/table adds a 1-char gap
+   between each adjacent column → 63 + 8 = 71 visible chars."
+  [{:title "SYM"  :width 6}
+   {:title "LAST" :width 8}
+   {:title "CHG%" :width 7}
+   {:title "BID"  :width 8}
+   {:title "ASK"  :width 8}
+   {:title "BSZ"  :width 6}
+   {:title "ASZ"  :width 6}
+   {:title "VOL"  :width 7}
+   {:title "AVG"  :width 7}])
 
 (def ^:private total-width
-  (+ (apply + (vals col-widths))
-     (dec (count col-widths))))      ;; 1-space gap between each adjacent col
+  (+ (apply + (map :width columns))
+     (dec (count columns))))
 
-(defn- header-row []
-  (let [{:keys [sym last chg bid ask bid-sz ask-sz vol avg]} col-widths]
-    (str (pad-row "SYM"  sym)    " "
-         (pad-row "LAST" last)   " "
-         (pad-row "CHG%" chg)    " "
-         (pad-row "BID"  bid)    " "
-         (pad-row "ASK"  ask)    " "
-         (pad-row "BSZ"  bid-sz) " "
-         (pad-row "ASZ"  ask-sz) " "
-         (pad-row "VOL"  vol)    " "
-         (pad-row "AVG"  avg))))
-
-(defn- quote-row [sym q]
-  (let [{:keys [last close bid ask bid-size ask-size volume avg-volume]} q
-        cw col-widths]
-    (str (pad-row sym (:sym cw))            " "
-         (fmt-num last       (:last   cw))  " "
-         (fmt-chg last close (:chg    cw))  " "
-         (fmt-num bid        (:bid    cw))  " "
-         (fmt-num ask        (:ask    cw))  " "
-         (fmt-int bid-size   (:bid-sz cw))  " "
-         (fmt-int ask-size   (:ask-sz cw))  " "
-         (fmt-int volume     (:vol    cw))  " "
-         (fmt-int avg-volume (:avg    cw)))))
+(defn- quote->row
+  "Project a (sym, quote-map) pair into the row vector charm/table expects.
+   CHG% stays an ANSI-colored string — charm.ansi.width/string-width strips
+   ANSI for column-width calculations, so the colour codes don't break
+   alignment."
+  [sym {:keys [last close bid ask bid-size ask-size volume avg-volume]}]
+  [sym
+   (fmt-num last 8)
+   (fmt-chg last close 7)
+   (fmt-num bid 8)
+   (fmt-num ask 8)
+   (fmt-int bid-size 6)
+   (fmt-int ask-size 6)
+   (fmt-int volume 7)
+   (fmt-int avg-volume 7)])
 
 (defn panel-width
   "Width in chars the watchlist column wants. Render composes the portfolio
@@ -297,18 +296,36 @@
   total-width)
 
 (defn panel-lines
-  "Build the right-side watchlist column as a vector of exactly `height` lines,
-   each padded to `panel-width` chars."
+  "Build the right-side watchlist column as a vector of exactly `height`
+   lines, each padded to `panel-width` chars. Walks the user's offset
+   (PageUp/PageDown when watchlist has focus) so long lists scroll."
   [state height]
   (let [w       (panel-width)
-        wl      (:watchlist state)
+        wl      (vec (:watchlist state))
         quotes  (:watchlist-quotes state)
-        header  (header-row)
-        rows    (if (empty? wl)
-                  [(pad-row "(empty — /add-to-watchlist SYM)" w)]
-                  (mapv (fn [sym] (quote-row sym (get quotes sym))) wl))
-        all     (vec (cons header rows))
-        capped  (vec (take height all))
-        padded  (into capped (repeat (max 0 (- height (count capped)))
-                                     (pad-row "" w)))]
-    (mapv #(pad-row % w) padded)))
+        offset  (max 0 (min (:watchlist-offset state 0) (max 0 (dec (count wl)))))
+        ;; Reserve one blank row at the top so the watchlist's header
+        ;; lines up with the portfolio pane's column-headers row, not
+        ;; its account-status row above it.
+        top-gap [(pad-row "" w)]
+        body-h  (max 1 (- height 2))   ;; -1 top-gap, -1 in-table header
+        visible (->> wl (drop offset) (take body-h) vec)
+        rendered (ct/table-view
+                   (ct/table columns
+                             (mapv (fn [sym] (quote->row sym (get quotes sym))) visible)
+                             :height 0
+                             :header? true)
+                   {:separator " "})
+        lines   (mapv #(pad-row % w) (str/split-lines rendered))
+        lines   (cond-> lines
+                  (empty? wl)
+                  (conj (pad-row "(empty — /add-to-watchlist SYM)" w)))
+        more?   (> (count wl) (+ offset body-h))
+        with-hint (cond-> lines
+                    more? (conj (pad-row (format "  +%d more — PgDn"
+                                                 (- (count wl) offset body-h))
+                                         w)))
+        all      (into (vec top-gap) with-hint)
+        padded   (into (vec (take height all))
+                       (repeat (max 0 (- height (count all))) (pad-row "" w)))]
+    padded))

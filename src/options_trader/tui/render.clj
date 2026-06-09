@@ -1,17 +1,30 @@
 (ns options-trader.tui.render
   "Pure functions that turn a state map + terminal dimensions into a string
    for charm.clj's view function."
-  (:require [clojure.string :as str]
+  (:require [charm.components.table :as ct]
+            [clojure.string :as str]
             [options-trader.tui.markdown :as md]
             [options-trader.tui.watchlist :as watchlist]))
 
+(def ^:private ansi-sgr-re
+  ;; ANSI SGR escape sequences: ESC [ ... m. \x1b is the ESC byte —
+  ;; without it the regex would leave a stray ESC behind per match,
+  ;; undercounting visible width by 1 char per sequence (manifested
+  ;; as a wobbly column divider every time bold/colour was used).
+  #"\x1b\[[0-9;]*m")
+
+(defn- visible-len [^String s]
+  (count (str/replace s ansi-sgr-re "")))
+
 (defn- pad [s n]
   (let [s    (str (or s ""))
-        len  (count s)
+        len  (visible-len s)
         diff (- n len)]
     (cond
       (= len n) s
-      (> len n) (subs s 0 (max 1 n))
+      (> len n) (if (re-find ansi-sgr-re s)
+                  s   ; trust the caller; cutting ANSI bytes mid-sequence breaks the terminal
+                  (subs s 0 (max 1 n)))
       :else     (str s (apply str (repeat diff \space))))))
 
 (defn- pad-ansi
@@ -98,9 +111,6 @@
               (when age (str "  · stream: " age)))
          width)))
 
-(defn- portfolio-table-header [width]
-  (pad " Sym              Qty       Mkt       Avg       P&L        P&L%" width))
-
 (defn- short-expiry
   "Compact MMdd string for an option expiry LocalDate, or nil for the
    1900-01-01 sentinel used on stock positions."
@@ -110,13 +120,20 @@
     (.format ^java.time.LocalDate d
              (java.time.format.DateTimeFormatter/ofPattern "MMdd"))))
 
-(defn- format-position [{:keys [symbol opt-right strike expiry qty avg-cost market-value unrealized-pnl]}
-                        width]
+(def ^:private portfolio-columns
+  "Column spec consumed by charm.components.table. Widths add up plus the
+   two-space separator between columns; total nominal width ≈ 70 chars."
+  [{:title "Sym"  :width 14}
+   {:title "Qty"  :width 6}
+   {:title "Mkt"  :width 10}
+   {:title "Avg"  :width 10}
+   {:title "P&L"  :width 10}
+   {:title "P&L%" :width 7}])
+
+(defn- position->row
+  "Project a position map into the row vector charm/table expects."
+  [{:keys [symbol opt-right strike expiry qty avg-cost market-value unrealized-pnl]}]
   (let [exp    (short-expiry expiry)
-        ;; For options, pack expiry + right + strike into the symbol slot
-        ;; ("NVDA 0117C200") so the user can tell which leg of a chain a
-        ;; row is — without it, every option on the same underlier reads
-        ;; identically. Stocks get just the ticker.
         label  (cond
                  (and opt-right (seq opt-right) exp)
                  (str symbol " " exp opt-right (some-> strike long))
@@ -129,14 +146,12 @@
                  (* (double avg-cost) (double qty)))
         pnl-pct (when (and unrealized-pnl base (pos? base))
                   (format "%.1f%%" (* 100.0 (/ (double unrealized-pnl) base))))]
-    (pad (format " %-14s %6s %10s %10s %10s %8s"
-                 (subs label 0 (min 14 (count label)))
-                 (or (and qty (pos? qty) (str qty)) "")
-                 (fnum mkt-px 2)
-                 (fnum avg-cost 2)
-                 (fpnl unrealized-pnl)
-                 (or pnl-pct ""))
-         width)))
+    [label
+     (or (and qty (pos? qty) (str qty)) "")
+     (fnum mkt-px 2)
+     (fnum avg-cost 2)
+     (fpnl unrealized-pnl)
+     (or pnl-pct "")]))
 
 (defn- portfolio-footer [{:keys [account-summary]} width]
   (let [{:keys [net-liq cash buying-power day-pl]} account-summary]
@@ -147,24 +162,34 @@
          width)))
 
 (defn- portfolio-lines [state width port-h]
-  (let [header     [(portfolio-header state width)]
-        theader    [(portfolio-table-header width)]
-        positions  (vec (:positions state))
-        ;; Reserved chrome: header + table-header + footer = 3 lines.
-        ;; A truncation hint takes one more line when positions overflow.
-        row-budget (max 0 (- port-h 3))
-        truncate?  (> (count positions) row-budget)
-        hint-line  (when truncate?
-                     [(pad (format "  +%d more — /portfolio to see all"
-                                   (- (count positions) (max 0 (dec row-budget))))
-                           width)])
-        shown      (if truncate? (max 0 (dec row-budget)) row-budget)
-        rows       (mapv #(format-position % width) (take shown positions))
-        empty-rows (repeat (max 0 (- row-budget (count rows) (if truncate? 1 0)))
-                           (pad "" width))
-        footer     [(portfolio-footer state width)]
-        lines      (vec (concat header theader rows hint-line empty-rows footer))]
-    (take port-h (concat lines (repeat (pad "" width))))))
+  (let [positions (vec (:positions state))
+        offset    (max 0 (min (:portfolio-offset state 0)
+                              (max 0 (dec (count positions)))))
+        ;; Reserved chrome: header (1) + table-header (1) + footer (1) = 3.
+        body-h    (max 0 (- port-h 3))
+        visible   (->> positions (drop offset) (take body-h) vec)
+        rows      (mapv position->row visible)
+        rendered  (ct/table-view
+                    (ct/table portfolio-columns rows
+                              :height 0
+                              :header? true
+                              :header-style nil :row-style nil :cursor-style nil)
+                    {:separator "  "})
+        ;; Split into [header & body-lines], pad each to width.
+        all-lines (str/split-lines rendered)
+        header'   (pad (first all-lines) width)
+        body      (mapv #(pad % width) (rest all-lines))
+        more?     (> (count positions) (+ offset body-h))
+        hint      (when more?
+                    (pad (format "  +%d more — PgDn to scroll"
+                                 (- (count positions) offset body-h))
+                         width))
+        empties   (repeat (max 0 (- body-h (count body) (if more? 1 0)))
+                          (pad "" width))
+        chrome    [(portfolio-header state width)]
+        footer    [(portfolio-footer state width)]
+        all       (concat chrome [header'] body (when hint [hint]) empties footer)]
+    (take port-h (concat all (repeat (pad "" width))))))
 
 ;; ── Main render ───────────────────────────────────────────────────────────────
 
