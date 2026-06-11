@@ -186,15 +186,20 @@
       (throw-cli-error! "claude CLI error" res))
     (str/trim (:out res))))
 
+(def ^:private pi-known-providers
+  #{:openai :moonshotai :moonshotai-cn :deepseek :minimax})
+
 (defn- complete-pi
-  "One-shot pi CLI invocation (`pi -p`). Used by complete when :agent is :pi."
+  "One-shot pi CLI invocation (`pi -p`). Used by complete when :agent is :pi.
+   pi has its own provider set (openai/moonshotai/…); :claude is meaningless
+   to pi, so we only forward --provider when it's in pi-known-providers."
   [{:keys [model system sh-fn] :or {sh-fn shell/sh}} prompt]
   (let [m    (or model @active-model)
         p    @active-provider
         full (with-system system prompt)
         args (cond-> ["pi" "-p"]
-               p (concat ["--provider" (name p)])
-               m (concat ["--model" m]))
+               (contains? pi-known-providers p) (concat ["--provider" (name p)])
+               m                                (concat ["--model" m]))
         res  (apply sh-fn (concat args [:in full]))]
     (when (pos? (:exit res))
       (throw-cli-error! "pi CLI error" res))

@@ -729,7 +729,9 @@
       (st/queue-prefix-message!
         (str "Compacted-session briefing from prior turns:\n\n" summary))
       summary)
-    (catch Throwable _ nil)))
+    (catch Throwable t
+      (log/error t "compact failed" {:scope scope :ex-data (ex-data t)})
+      nil)))
 
 (defn handle-compact [_args _ds]
   (let [scope (:scope @st/state)]
