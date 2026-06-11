@@ -1,13 +1,11 @@
 {
   "name": "cancel_order",
-  "description": "Cancel an open order by order id. Disabled by default; returns error unless :allow-orders? is true.",
+  "description": "Cancel an open order by id. Confirm-gated: first call (no `confirm`) returns a preview; a second call with `confirm: true` sends the cancel, which additionally requires the MCP server to be started with `:allow-orders? true`.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "order_id": {
-        "type": "string",
-        "description": "The order identifier returned by place_order."
-      }
+      "order_id": {"type": "integer", "description": "The order id returned by place_order."},
+      "confirm":  {"type": "boolean", "description": "Must be true on the second call to actually send the cancel. Default false (preview)."}
     },
     "required": ["order_id"]
   }

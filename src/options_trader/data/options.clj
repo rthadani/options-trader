@@ -1,5 +1,8 @@
 (ns options-trader.data.options
-  (:require [options-trader.data.ibkr :as ibkr]))
+  (:require [clj-yfinance.experimental.options :as yfo]
+            [options-trader.data.ibkr :as ibkr]
+            [taoensso.timbre :as log])
+  (:import [java.time Instant ZoneOffset]))
 
 (defprotocol IOptionsSource
   "Protocol for options data sources."
@@ -55,6 +58,45 @@
     (callback {:type :mock-contract-details :contract contract})
     2))
 
+(defn- epoch->date-str [secs]
+  (when (number? secs)
+    (-> (Instant/ofEpochSecond (long secs))
+        (.atZone ZoneOffset/UTC)
+        .toLocalDate
+        str)))
+
+(defn- yahoo->event
+  "Project clj-yfinance's chain map into the event shape collapse-chain
+   consumes, plus a :contracts payload the action handler propagates so
+   premiums + greeks come back from a single fetch_option_chain call."
+  [data]
+  {:type        :security-definition-optional-parameter
+   :exchange    "YAHOO"
+   :expirations (->> (:expiration-dates data) (keep epoch->date-str) vec)
+   :strikes     (vec (:strikes data))
+   :contracts   {:calls (vec (:calls data))
+                 :puts  (vec (:puts data))}
+   :quote       (:quote data)})
+
+(deftype YahooOptionsSource []
+  IOptionsSource
+  (req-chain [_ underlying _expiry callback]
+    (let [sym (:symbol underlying)]
+      (try
+        (if-let [data (yfo/fetch-options sym)]
+          (do (callback [(yahoo->event data)])
+              sym)
+          (do (callback [{:type :error
+                          :message (str "yahoo returned no chain for " sym)}])
+              :unavailable))
+        (catch Throwable t
+          (log/warnf t "yahoo option-chain failed for %s" sym)
+          (callback [{:type :error :message (.getMessage t)}])
+          :unavailable))))
+  (req-contract-details [_ _contract callback]
+    (callback [{:type :error :message "yahoo source has no contract-details"}])
+    :unavailable))
+
 (defmulti make-source
   "Construct an options source from a config map. Dispatches on :type."
   :type)
@@ -64,6 +106,9 @@
 
 (defmethod make-source :ibkr [{:keys [ib-client]}]
   (IbkrOptionsSource. ib-client))
+
+(defmethod make-source :yahoo [_cfg]
+  (YahooOptionsSource.))
 
 (defmethod make-source :mock [_cfg]
   (MockOptionsSource.))

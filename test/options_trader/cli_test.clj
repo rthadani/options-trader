@@ -27,10 +27,16 @@
     (let [result (cli/dispatch ["refresh"])]
       (is (= :refresh (:subcommand result))))))
 
-(deftest dispatch-order-disabled-test
-  (testing "order subcommand returns orders_disabled by default"
+(deftest dispatch-order-preview-by-default-test
+  (testing "order subcommand returns a preview when --allow-orders is missing"
     (let [result (cli/dispatch ["order" "BUY" "AAPL" "1"])]
-      (is (= "orders_disabled" (:error result))))))
+      (is (false? (:confirm? result)))
+      (is (map? (:preview result))))))
+
+(deftest dispatch-order-confirm-blocked-without-allow-orders
+  (testing "order ... confirm without --allow-orders → :orders-disabled"
+    (let [result (cli/dispatch ["order" "BUY" "AAPL" "1" "MKT" "" "confirm"])]
+      (is (= :orders-disabled (:error result))))))
 
 (deftest dispatch-unknown-subcommand-test
   (testing "unknown subcommand returns error"

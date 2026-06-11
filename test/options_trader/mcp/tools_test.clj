@@ -87,17 +87,33 @@
       (is (vector? (:indicators result)))
       (is (= ["AAPL" "MSFT"] (:symbols result))))))
 
-(deftest call-tool-place-order-disabled-test
-  (testing "returns orders_disabled by default"
+(deftest call-tool-place-order-preview-without-confirm
+  (testing "preview returned even when allow-orders? is false (send is still gated)"
     (let [result (tools/call-tool "place_order"
-                   {:symbol "AAPL" :action "BUY" :quantity 1 :order_type "MKT"}
+                   {:symbol "AAPL" :side "BUY" :quantity 1 :order_type "MKT"}
                    {})]
-      (is (= "orders_disabled" (:error result))))))
+      (is (false? (:confirm? result)))
+      (is (map? (:preview result))))))
 
-(deftest call-tool-cancel-order-disabled-test
-  (testing "returns orders_disabled by default"
-    (let [result (tools/call-tool "cancel_order" {:order_id "123"} {})]
-      (is (= "orders_disabled" (:error result))))))
+(deftest call-tool-place-order-confirm-blocked-by-allow-orders
+  (testing "confirm=true + allow-orders?=false → :orders-disabled"
+    (let [result (tools/call-tool "place_order"
+                   {:symbol "AAPL" :side "BUY" :quantity 1
+                    :order_type "MKT" :confirm true}
+                   {})]
+      (is (= :orders-disabled (:error result))))))
+
+(deftest call-tool-cancel-order-preview-without-confirm
+  (testing "preview returned when not confirmed"
+    (let [result (tools/call-tool "cancel_order" {:order_id 123} {})]
+      (is (false? (:confirm? result)))
+      (is (= 123 (-> result :preview :order-id))))))
+
+(deftest call-tool-cancel-order-confirm-blocked-by-allow-orders
+  (testing "confirm=true + allow-orders?=false → :orders-disabled"
+    (let [result (tools/call-tool "cancel_order"
+                   {:order_id 123 :confirm true} {})]
+      (is (= :orders-disabled (:error result))))))
 
 (deftest call-tool-unknown-test
   (testing "unknown tool returns error"

@@ -117,6 +117,13 @@
 (defn clear-input! []
   (swap! state assoc :input "" :cursor 0))
 
+(defn clear-chat!
+  "Wipe the visible chat + activity stream. Used by /compact after a
+   successful summarisation so the on-screen view matches the freshly-reset
+   session state."
+  []
+  (swap! state assoc :messages [] :activity []))
+
 (defn set-tws-status! [k]
   (swap! state assoc :tws-status k))
 

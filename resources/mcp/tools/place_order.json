@@ -1,15 +1,30 @@
 {
   "name": "place_order",
-  "description": "Submit an order to IBKR. Disabled by default; returns error unless :allow-orders? is true.",
+  "description": "Submit an order to IBKR. Confirm-gated: a first call (no `confirm`) returns a preview {contract, order, notional}. A second call with `confirm: true` actually sends, and additionally requires the MCP server to be started with `:allow-orders? true`. Supports single-instrument MKT/LMT orders and multi-leg combos (sec_type: \"BAG\" with combo_legs).",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "symbol": {"type": "string", "description": "Ticker symbol."},
-      "action": {"type": "string", "enum": ["BUY", "SELL"], "description": "Order side."},
-      "quantity": {"type": "number", "description": "Number of contracts or shares."},
-      "order_type": {"type": "string", "enum": ["MKT", "LMT", "STP"], "description": "Order type."},
-      "limit_price": {"type": "number", "description": "Limit price (required for LMT orders)."}
+      "symbol":       {"type": "string", "description": "Ticker symbol. Required unless sec_type is \"BAG\"."},
+      "side":         {"type": "string", "enum": ["BUY", "SELL"], "description": "Order side."},
+      "action":       {"type": "string", "enum": ["BUY", "SELL"], "description": "Alias for side (legacy)."},
+      "quantity":     {"type": "number", "description": "Number of shares (STK), contracts (OPT), or spreads (BAG)."},
+      "order_type":   {"type": "string", "enum": ["MKT", "LMT"], "description": "Order type. STP / STP LMT not yet supported."},
+      "limit_price":  {"type": "number", "description": "Limit price (required when order_type is LMT)."},
+      "sec_type":     {"type": "string", "enum": ["STK", "OPT", "BAG"], "description": "Security type. Default STK."},
+      "exchange":     {"type": "string", "description": "Routing exchange. Default SMART."},
+      "currency":     {"type": "string", "description": "Currency. Default USD."},
+      "tif":          {"type": "string", "enum": ["DAY", "GTC", "IOC", "FOK"], "description": "Time-in-force. Default DAY."},
+      "outside_rth":  {"type": "boolean", "description": "Allow execution outside regular trading hours. Default false."},
+      "combo_legs":   {"type": "array",
+                       "description": "Multi-leg structure for sec_type BAG. Each leg: {conid, ratio, action (BUY/SELL), exchange}.",
+                       "items": {"type": "object",
+                                 "properties": {"conid":    {"type": "integer"},
+                                                "ratio":    {"type": "integer"},
+                                                "action":   {"type": "string", "enum": ["BUY", "SELL"]},
+                                                "exchange": {"type": "string"}},
+                                 "required": ["conid", "ratio", "action"]}},
+      "confirm":      {"type": "boolean", "description": "Must be true on the second call to actually send the order. Default false (preview)."}
     },
-    "required": ["symbol", "action", "quantity", "order_type"]
+    "required": ["quantity", "order_type"]
   }
 }

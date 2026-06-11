@@ -5,6 +5,8 @@
             [options-trader.data.fundamentals :as fundamentals]
             [options-trader.data.ibkr        :as ibkr]
             [options-trader.data.news        :as news]
+            [options-trader.data.options     :as options]
+            [options-trader.data.orders      :as orders]
             [options-trader.data.short-interest :as short-interest]
             [options-trader.data.sources     :as sources]
             [options-trader.db.duckdb        :as duckdb]
@@ -112,7 +114,9 @@
                                {:type :duckdb-cache :ds ds})
              :short-interest (short-interest/make-source
                                {:type :duckdb-cache :ds ds})})))
-      (let [ctx (cond-> {}
+      (let [ctx (cond-> {:options-source (options/make-source {:type :yahoo})
+                         :order-source   (orders/make-source
+                                           {:type :ibkr :ib-client ib-client})}
                   ds        (assoc :ds ds)
                   ib-client (assoc :ib-client ib-client))]
         (run-stdio-server rdr wtr ctx)))))

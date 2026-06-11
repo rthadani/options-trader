@@ -5,9 +5,12 @@
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
             [options-trader.actions.core :as actions]
-            ;; Registers research tool defmethods via actions/handle-action.
+            ;; Registers research / orders defmethods via actions/handle-action.
             [options-trader.actions.research]
+            [options-trader.actions.orders]
+            [options-trader.data.ibkr :as ibkr]
             [options-trader.db.queries.indicators :as qi]
+            [options-trader.db.queries.portfolio :as qp]
             [options-trader.portfolio.core :as portfolio]
             [options-trader.screener.registry :as screener]))
 
@@ -75,28 +78,104 @@
         {:error "symbols list is empty" :indicators []}))
     (no-ds-error {:indicators []})))
 
-(defn- handle-portfolio-summary [ds account-id args]
-  (let [acct  (or (:account_id args) account-id)
-        store (when ds (portfolio/->JdbcStore ds))]
-    {:positions       (when store (portfolio/read-positions store acct))
-     :account-summary (when store (portfolio/read-account-summary store acct))
-     :account-id      acct}))
+(defn- read-db-portfolio
+  "Plain DB-cache read; nil when ds is absent."
+  [ds acct]
+  (when ds
+    (let [store (portfolio/->JdbcStore ds)]
+      {:positions       (portfolio/read-positions       store acct)
+       :account-summary (portfolio/read-account-summary store acct)})))
 
-(defn- handle-place-order [allow-orders? args]
-  (if allow-orders?
-    (actions/handle-action {:type :place-order
-                            :symbol    (:symbol args)
-                            :action    (:action args)
-                            :quantity  (:quantity args)
-                            :order-type (:order_type args)
-                            :limit-price (:limit_price args)})
-    (orders-disabled)))
+(defn- live-portfolio
+  "Live IB read; nil on failure. Writes through to DuckDB via JdbcStore so the
+   next DB read picks up the freshest data."
+  [ds ib-client acct]
+  (when (and ds ib-client acct)
+    (let [src (portfolio/make-source
+                {:portfolio {:source :ibkr :account-id acct}}
+                ib-client ds)]
+      (try
+        {:positions       (portfolio/positions       src)
+         :account-summary (portfolio/account-summary src)}
+        (catch Throwable t
+          {:error :live-read-failed :message (.getMessage t)})))))
 
-(defn- handle-cancel-order [allow-orders? args]
-  (if allow-orders?
-    (actions/handle-action {:type :cancel-order
-                            :order-id (:order_id args)})
-    (orders-disabled)))
+(defn- empty-result? [{:keys [positions account-summary]}]
+  (and (or (nil? positions) (and (sequential? positions) (empty? positions)))
+       (nil? account-summary)))
+
+(defn- handle-portfolio-summary
+  "Resolve current portfolio state for the agent. Tries live IB first, then
+   falls back to the DB cache when the live read returns empty (which happens
+   when the MCP server's IB session is up but events stop flowing, or the
+   cache simply has fresher data). Returns explicit :source so the agent
+   knows where the numbers came from."
+  [ds account-id ib-client args]
+  ;; Resolution order mirrors the TUI's default-account-id so the agent picks
+  ;; up the same account the TUI's portfolio panel is showing.
+  (let [acct (or (:account_id args)
+                 account-id
+                 (when ib-client (ibkr/default-account))
+                 (when ds        (qp/default-account-from-positions ds))
+                 (when ds        (qp/default-account-from-summary   ds)))
+        live (live-portfolio ds ib-client acct)
+        db   (read-db-portfolio ds acct)]
+    (cond
+      (and live (not (:error live)) (not (empty-result? live)))
+      (merge {:source :live :account-id acct} live)
+
+      (and db (not (empty-result? db)))
+      (merge {:source     :db
+              :account-id acct
+              :live-error (when live (:error live))
+              :live-note  (when (and live (empty-result? live))
+                            "live read returned empty; serving cached data")}
+             db)
+
+      ds
+      {:source          :db
+       :account-id      acct
+       :positions       []
+       :account-summary nil
+       :error           :no-cached-data
+       :message         (str "DuckDB has no positions or account_summary "
+                             "rows for account " (pr-str acct) ". Run "
+                             "`clojure -M:cli refresh-portfolio` to seed "
+                             "the warehouse, or start TWS and restart the "
+                             "agent so MCP gets a live IB connection.")}
+
+      :else
+      {:source          :none
+       :account-id      acct
+       :positions       []
+       :account-summary nil
+       :error           :no-datasource
+       :message         "MCP ctx has neither :ds nor :ib-client — cannot return portfolio."})))
+
+(defn- handle-place-order [allow-orders? order-source args]
+  (actions/handle-action
+    {:type          :place-order
+     :allow-orders? allow-orders?
+     :order-source  order-source
+     :side          (or (:side args) (:action args))
+     :symbol        (:symbol args)
+     :sec-type      (:sec_type args)
+     :exchange      (:exchange args)
+     :currency      (:currency args)
+     :quantity      (:quantity args)
+     :order-type    (:order_type args)
+     :limit-price   (:limit_price args)
+     :tif           (:tif args)
+     :outside-rth?  (boolean (:outside_rth args))
+     :combo-legs    (:combo_legs args)
+     :confirm?      (boolean (:confirm args))}))
+
+(defn- handle-cancel-order [allow-orders? order-source args]
+  (actions/handle-action {:type          :cancel-order
+                          :allow-orders? allow-orders?
+                          :order-source  order-source
+                          :order-id      (:order_id args)
+                          :confirm?      (boolean (:confirm args))}))
 
 
 (def ^:private research-tool-specs
@@ -194,17 +273,17 @@
   "Dispatch a tool call by name. ctx map may contain :ds :account-id :allow-orders?.
    Returns a result map."
   [tool-name arguments ctx]
-  (let [{:keys [ds account-id allow-orders?]
+  (let [{:keys [ds account-id ib-client order-source allow-orders?]
          :or   {allow-orders? false}} ctx]
     (cond
       (= "portfolio_summary" tool-name)
-      (handle-portfolio-summary ds account-id arguments)
+      (handle-portfolio-summary ds account-id ib-client arguments)
 
       (= "place_order" tool-name)
-      (handle-place-order allow-orders? arguments)
+      (handle-place-order allow-orders? order-source arguments)
 
       (= "cancel_order" tool-name)
-      (handle-cancel-order allow-orders? arguments)
+      (handle-cancel-order allow-orders? order-source arguments)
 
       (contains? db-tool-handlers tool-name)
       ((get db-tool-handlers tool-name) ds arguments)

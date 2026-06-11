@@ -6,6 +6,7 @@
             [options-trader.config           :as config]
             [options-trader.data.edgar       :as edgar]
             [options-trader.data.ibkr        :as ibkr]
+            [options-trader.data.orders      :as orders]
             [options-trader.data.universes   :as universes]
             [options-trader.db.duckdb        :as duckdb]
             [options-trader.db.refresh       :as refresh]
@@ -16,7 +17,7 @@
 (def ^:private cli-options
   [["-h" "--help" "Show usage"]
    ["-p" "--profile PROFILE" "Config profile" :default "dev"]
-   ["-u" "--universe NAME"   "Universe (sp500/nasdaq100/...)" :default "sp500"]
+   ["-u" "--universe NAME"   "Universe (sp500/nasdaq100/<user-file>...)" :default "sp500"]
    ["-s" "--symbols CSV"     "Comma-separated symbols (overrides --universe)"]
    ["-b" "--bar-size SIZE"   "Intraday bar size, e.g. \"15 mins\"" :default "15 mins"]
    ["-a" "--account ACCOUNT" "IBKR account id (auto-detected from TWS handshake if omitted)"]
@@ -170,8 +171,14 @@
   #{"portfolio" "daily" "intraday" "news" "fundamentals" "filings"
     "iv-daily" "short-interest" "earnings" "universes"})
 
-(defmethod run-subcommand :refresh-all [_ opts _]
-  (let [cfg          (config/load-config (:profile opts))
+(defmethod run-subcommand :refresh-all [_ opts args]
+  ;; Positional universe wins over --universe when no --symbols was given.
+  ;; `bb refresh-data my-watchlist --profile prod` should refresh my-watchlist,
+  ;; not the default sp500.
+  (let [opts         (cond-> opts
+                       (and (first args) (not (:symbols opts)))
+                       (assoc :universe (first args)))
+        cfg          (config/load-config (:profile opts))
         ds           (or (:ds opts) (open-ds! cfg))
         only-set     (when (:only opts)
                        (into #{} (map str/trim) (str/split (:only opts) #",")))
@@ -267,14 +274,28 @@
     {:subcommand :refresh :result r}))
 
 (defmethod run-subcommand :order [_ opts args]
-  (if (:allow-orders opts)
-    (let [[action sym qty] args]
-      (actions/handle-action {:type     :place-order
-                              :action   (some-> action str/upper-case)
-                              :symbol   sym
-                              :quantity (some-> qty parse-long)}))
-    {:error   "orders_disabled"
-     :message "Pass --allow-orders to enable order execution"}))
+  ;; Usage:
+  ;;   order BUY|SELL SYM QTY [MKT|LMT] [PRICE]   ← single-call preview
+  ;;   order BUY|SELL SYM QTY [MKT|LMT] [PRICE] confirm
+  ;; --allow-orders is required for the second form to actually send.
+  (let [[side sym qty otype price tail] args
+        confirm? (= "confirm" (some-> tail str/lower-case))
+        conn     (when (:allow-orders opts)
+                   (try (conn-of opts) (catch Throwable _ nil)))
+        src      (orders/make-source {:type :ibkr :ib-client conn})]
+    (try
+      (actions/handle-action
+        {:type          :place-order
+         :allow-orders? (boolean (:allow-orders opts))
+         :order-source  src
+         :side          (some-> side str/upper-case)
+         :symbol        sym
+         :quantity      (some-> qty parse-long)
+         :order-type    (or (some-> otype str/upper-case) "MKT")
+         :limit-price   (some-> price parse-double)
+         :confirm?      confirm?})
+      (finally (when (and conn (not (:conn opts)))
+                 (try (ibkr/disconnect!) (catch Throwable _)))))))
 
 (defmethod run-subcommand :default [cmd _ _]
   {:error (str "unknown subcommand: " (name cmd))})

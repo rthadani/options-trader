@@ -203,12 +203,17 @@
         events (await-once
                  (fn [cb]
                    (options/req-chain src (ibkr/->contract symbol) "" cb))
-                 timeout-ms)]
+                 timeout-ms)
+        evs    (:result events)
+        rich   (some :contracts evs)
+        quote* (some :quote evs)]
     {:ok true
      :result (cond
                (:error events) (assoc events :symbol symbol)
-               :else (-> (collapse-chain (:result events) expiry-prefix)
-                         (assoc :symbol symbol)))}))
+               :else (cond-> (-> (collapse-chain evs expiry-prefix)
+                                 (assoc :symbol symbol))
+                       rich   (assoc :contracts rich)
+                       quote* (assoc :quote     quote*)))}))
 
 (defmethod actions/handle-action :research/fetch-quote
   [{:keys [ib-client source ds symbol avg-window]

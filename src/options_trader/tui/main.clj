@@ -694,13 +694,48 @@
     (conv/clear-pi-session! scope)
     (st/append-chat! :system "claude + pi sessions reset for current scope")))
 
-(def ^:private compact-prompt
-  (str "Produce a concise (≤200 words) summary of the conversation so far. "
-       "PRESERVE: symbols/topics analysed, open questions, user preferences, "
-       "any decisions reached. DROP: specific numeric values, full filing "
-       "excerpts, verdict-card formatting, repeated tool output. The summary "
-       "becomes background context for a fresh session, so write it as a "
-       "briefing TO yourself, not as prose."))
+(def ^:private compact-instructions
+  (str "Below is the full conversation transcript. Produce a structured "
+       "briefing of 1500–3000 words that the next session can act on "
+       "without needing to re-ask what was covered.\n\n"
+       "PRESERVE: every symbol or topic analysed and what we concluded; "
+       "open questions; user preferences and constraints stated explicitly; "
+       "decisions reached and their rationale; any trade ideas with their "
+       "structure (legs, expiry, max-loss) and current status (open / "
+       "pending / rejected); MCP tools the user found useful or wanted to "
+       "avoid; the current scope/account context.\n\n"
+       "DROP: verbatim tool output (cite the column or query instead); "
+       "repeated explanations; verdict-card formatting; transient log "
+       "noise; numeric precision past 2 significant figures for prices "
+       "(round 228.41 → ~228).\n\n"
+       "Write it as a briefing TO yourself for a fresh session, not as "
+       "prose. Use short paragraphs or bullet lists grouped by symbol or "
+       "theme. Lead with a one-line overview of the scope and goals."))
+
+(defn- transcript-text-for-scope
+  "Read the active session's on-disk JSONL and concatenate into a plain
+   text USER/ASSISTANT dialog. Returns nil when no session-id is bound for
+   the current agent or the JSONL can't be located."
+  [scope]
+  (let [rec    (conv/current-claude-session scope)
+        agent  (llm/current-agent)
+        id-key (case agent :claude :claude-session-id :pi :pi-session-id)
+        id     (get rec id-key)]
+    (when id
+      (let [rows (conv/list-all-transcripts
+                   {:runtime-claude-dir (paths/runtime-claude-dir)
+                    :pi-session-dir     (paths/pi-session-dir)})
+            row  (some #(when (and (= agent (:agent %))
+                                    (= id    (:session-id %)))
+                          %)
+                       rows)]
+        (when-let [file (:file row)]
+          (let [turns (conv/replay-turns agent file)]
+            (when (seq turns)
+              (str/join "\n\n"
+                (map (fn [{:keys [role text]}]
+                       (str (str/upper-case (name role)) ":\n" text))
+                     turns)))))))))
 
 (def ^:dynamic *auto-compact-threshold*
   "Auto-compact when scope's cumulative input-tokens exceed this.
@@ -719,16 +754,26 @@
   (or (-> (conv/current-claude-session scope) :tokens-input) 0))
 
 (defn- do-compact!
-  "Summarise via llm/complete, drop sessions, queue the summary as the
-   next-msg prefix. Returns the summary or nil on llm failure."
+  "Read the actual transcript, ask the LLM to summarise it, drop sessions,
+   wipe the on-screen chat, queue the summary as the next-msg prefix.
+   Returns the summary or nil on failure / nothing-to-compact."
   [scope]
   (try
-    (let [summary (llm/complete {} compact-prompt)]
-      (conv/clear-claude-session! scope)
-      (conv/clear-pi-session! scope)
-      (st/queue-prefix-message!
-        (str "Compacted-session briefing from prior turns:\n\n" summary))
-      summary)
+    (if-let [transcript (transcript-text-for-scope scope)]
+      (let [prompt  (str compact-instructions
+                         "\n\n=== CONVERSATION ===\n"
+                         transcript
+                         "\n=== END ===")
+            summary (llm/complete {} prompt)]
+        (conv/clear-claude-session! scope)
+        (conv/clear-pi-session! scope)
+        (st/clear-chat!)
+        (st/queue-prefix-message!
+          (str "Compacted-session briefing from prior turns:\n\n" summary))
+        summary)
+      (do
+        (log/info "compact: no transcript found for scope" scope)
+        nil))
     (catch Throwable t
       (log/error t "compact failed" {:scope scope :ex-data (ex-data t)})
       nil)))

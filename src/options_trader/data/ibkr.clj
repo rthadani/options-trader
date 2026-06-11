@@ -49,6 +49,29 @@
 ;; :account-download-end events route via the same id-as-fallback trick.
 (defonce ^:private account-updates-rid (atom nil))
 
+;; IB orders use their own monotonic id sequence (NOT the req-id sequence).
+;; TWS hands us the seed via :next-valid-id at handshake; every place-order
+;; consumes one. We keep the counter here and bump it as orders go out.
+(defonce ^:private next-order-id-atom (atom nil))
+
+(defn- capture-next-valid-id! [event]
+  (when-let [seed (or (:order-id event) (:id event))]
+    (let [n (long seed)]
+      (reset! next-order-id-atom n)
+      (log/infof "ibkr next-valid-order-id seeded at %d" n))))
+
+(defn next-order-id!
+  "Atomically consume and return the next IB order-id. Throws if TWS has
+   not yet sent :next-valid-id — connect! waits for managedAccounts but
+   not for the order-id seed; callers can race the handshake on a fresh
+   connection. Retry after a short delay if this fires."
+  []
+  (let [v (swap! next-order-id-atom (fn [n] (when n (inc n))))]
+    (when (nil? v)
+      (throw (ex-info "next-valid-order-id not yet received from TWS"
+                      {:hint "wait ~250ms after connect! before sending orders"})))
+    (dec v)))
+
 
 (defn ->contract
   "Build (or normalise) a contract map for ib-re-actor.
@@ -303,6 +326,7 @@
                                  batch-terminal-event-types)
                                t)]
       (when (= t :managed-accounts) (capture-managed-accounts! event))
+      (when (= t :next-valid-id)    (capture-next-valid-id!    event))
       (when-let [tap @event-tap]
         (swap! tap update :events
           (fn [evs]
@@ -686,6 +710,12 @@
         cnid (or (:conid underlying) 0)]
     ((cs-fn 'request-sec-def-option-parameters) ecs req-id sym "" sec cnid)))
 
+(defn- send-place-order [ecs {:keys [order-id contract order]}]
+  ((cs-fn 'place-order) ecs order-id contract order))
+
+(defn- send-cancel-order [ecs {:keys [order-id]}]
+  ((cs-fn 'cancel-order) ecs order-id))
+
 (def ^:private request-senders
   {:req-historical-bars     send-historical-bars
    :req-historical-iv       send-historical-iv
@@ -702,7 +732,9 @@
    :req-news-article        send-news-article
    :req-historical-news     send-historical-news
    :req-scanner-subscription send-scanner-subscription
-   :req-option-chain        send-option-chain})
+   :req-option-chain        send-option-chain
+   :place-order             send-place-order
+   :cancel-order            send-cancel-order})
 
 (defn send-request!
   "Translate req to a TWS API call. conn must contain :ecs; req must carry
@@ -791,6 +823,37 @@
 
 (defn req-option-chain [conn underlying expiry cb]
   (dispatch-batch! conn {:type :req-option-chain :underlying underlying :expiry expiry} cb))
+
+(defn req-place-order!
+  "Submit an order to IB. Allocates the next order-id from TWS's monotonic
+   sequence (NOT the req-id sequence), registers cb under that id so future
+   :order-status / :open-order / :error events for it can be routed via the
+   normal handle-event! plumbing, and fires placeOrder. Returns the assigned
+   order-id, or :unavailable if TWS hasn't seeded :next-valid-id yet.
+
+   `contract` is a regular contract map (or a BAG map with :combo-legs for
+   multi-leg). `order` carries the IB order fields — :action (\"BUY\"/\"SELL\"),
+   :total-quantity (number), :order-type (\"MKT\"/\"LMT\"), :lmt-price (when
+   LMT), :tif (\"DAY\"/\"GTC\"), :outside-rth? (bool), :transmit? (bool, default
+   true). cb may be nil if the caller doesn't need status updates."
+  [conn contract order cb]
+  (try
+    (let [id (next-order-id!)]
+      (when cb (register-pending! id cb :stream))
+      (send-request! conn {:type :place-order :order-id id
+                           :contract contract :order order})
+      id)
+    (catch clojure.lang.ExceptionInfo e
+      (log/warnf "req-place-order!: %s" (.getMessage e))
+      :unavailable)))
+
+(defn req-cancel-order!
+  "Cancel a previously-submitted order by id. Fire-and-forget; cancellation
+   status arrives via the same callback the order was placed with (if any).
+   Returns the order-id passed in."
+  [conn order-id]
+  (send-request! conn {:type :cancel-order :order-id order-id})
+  order-id)
 
 (defn req-contract-details [conn contract cb]
   (dispatch-batch! conn {:type :req-contract-details :contract contract} cb))
