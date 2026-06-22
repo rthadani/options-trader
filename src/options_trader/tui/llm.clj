@@ -18,7 +18,7 @@
 (def default-provider :claude)
 (def default-agent :claude)
 
-(def known-providers #{:claude :ollama :kimi :minimax})
+(def known-providers #{:claude :ollama :kimi :minimax :zai})
 (def known-agents    #{:claude :pi})
 
 (defonce ^:private active-model    (atom default-model))
@@ -53,7 +53,8 @@
 
 (def ^:private provider-endpoints
   {:kimi    {:base-url "https://api.moonshot.ai/anthropic"  :key-env "MOONSHOT_API_KEY"}
-   :minimax {:base-url "https://api.minimax.chat/anthropic" :key-env "MINIMAX_API_KEY"}})
+   :minimax {:base-url "https://api.minimax.chat/anthropic" :key-env "MINIMAX_API_KEY"}
+   :zai     {:base-url "https://api.z.ai/api/anthropic"     :key-env "ZAI_API_KEY"}})
 
 (defn- require-key! [key-env provider]
   (let [k (System/getenv key-env)]
@@ -98,7 +99,7 @@
   "Build {:cmd :env} for a streaming `claude` run routed to `provider`.
    `claude-args` are the flags after the binary (NOT the binary or --model).
    For :ollama the model is handled by `ollama launch`; otherwise it's `claude
-   --model`. :kimi/:minimax add the Anthropic-compatible env overrides."
+   --model`. :kimi/:minimax/:zai add the Anthropic-compatible env overrides."
   [{:keys [model provider claude-args]}]
   (let [m (str (or model @active-model))
         p (or provider @active-provider)]
@@ -107,6 +108,7 @@
                 :env (claude-config-env)}
       :kimi    {:cmd (into ["claude" "--model" m] claude-args) :env (anthropic-compat-env :kimi m)}
       :minimax {:cmd (into ["claude" "--model" m] claude-args) :env (anthropic-compat-env :minimax m)}
+      :zai     {:cmd (into ["claude" "--model" m] claude-args) :env (anthropic-compat-env :zai m)}
       {:cmd (into ["claude" "--model" m] claude-args) :env (claude-config-env)})))
 
 (defn spawn-claude
@@ -187,7 +189,7 @@
     (str/trim (:out res))))
 
 (def ^:private pi-known-providers
-  #{:openai :moonshotai :moonshotai-cn :deepseek :minimax})
+  #{:openai :moonshotai :moonshotai-cn :deepseek :minimax :zai})
 
 (defn- complete-pi
   "One-shot pi CLI invocation (`pi -p`). Used by complete when :agent is :pi.
@@ -240,6 +242,7 @@
       :ollama  (complete-ollama model-config prompt)
       :kimi    (complete-via-endpoint :kimi    model-config prompt)
       :minimax (complete-via-endpoint :minimax model-config prompt)
+      :zai     (complete-via-endpoint :zai     model-config prompt)
       (complete-claude model-config prompt))))
 
 (defn- extract-json-object [text]
