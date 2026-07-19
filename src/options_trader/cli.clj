@@ -31,6 +31,7 @@
    [nil  "--no-fundamentals"  "refresh-all: skip fundamentals phase"  :default false]
    [nil  "--no-filings"       "refresh-all: skip filings phase"       :default false]
    [nil  "--no-universes"     "refresh-all: skip universes phase"     :default false]
+   [nil  "--no-indicators"    "refresh-daily: skip derived-indicator recompute (bars only)" :default false]
    [nil  "--allow-orders"     "Enable order execution"                :default false]])
 
 (defn- print-usage [summary]
@@ -97,7 +98,9 @@
         conn    (conn-of opts)
         symbols (resolve-symbols opts ds)]
     (try
-      (refresh/refresh-bars-daily! {:conn conn :ds ds :symbols symbols})
+      (refresh/refresh-bars-daily!
+        {:conn conn :ds ds :symbols symbols
+         :compute-indicators? (not (:no-indicators opts))})
       (finally (when-not (:conn opts) (ibkr/disconnect!))))))
 
 (defmethod run-subcommand :refresh-intraday [_ opts _]

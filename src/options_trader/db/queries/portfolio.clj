@@ -8,6 +8,9 @@
 (defn upsert-position! [ds row]
   (jdbc/execute-one! ds (upsert-position-sqlvec row)))
 
+(defn delete-positions-for-account! [ds account]
+  (jdbc/execute-one! ds (delete-positions-for-account-sqlvec {:account account})))
+
 (defn insert-account-summary! [ds row]
   (jdbc/execute-one! ds (insert-account-summary-sqlvec row)))
 

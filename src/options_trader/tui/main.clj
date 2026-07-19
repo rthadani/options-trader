@@ -302,21 +302,21 @@
         scope         (:scope @st/state)
         cwd           (System/getProperty "user.dir")
         additional    (:additional-dirs @st/state [])
-        system-prompt (rt-ctx/build {})
-        ;; Order matters: auto-compact may queue a prefix that take-
-        ;; prefix-message! consumes on this same turn.
-        _             (maybe-autocompact! scope)
-        prefix        (st/take-prefix-message!)
-        user-msg      (cond->> user-msg
-                        prefix (str prefix "\n\n"))]
+        system-prompt (rt-ctx/build {})]
     (st/set-streaming! true)
     (st/append-message! :user user-msg)
     (a/>!! refresh-chan :refresh)
     (a/thread
       (try
-        (case agent
-          :pi     (spawn-pi-agent! model provider system-prompt additional cwd scope user-msg)
-          :claude (spawn-claude-agent! model provider system-prompt additional cwd scope user-msg))
+        ;; Off the event-loop thread: auto-compact makes a blocking LLM call
+        ;; that used to freeze the TUI for the summary duration (30-90s). It
+        ;; may queue a prefix that take-prefix-message! consumes on this turn.
+        (maybe-autocompact! scope)
+        (let [prefix   (st/take-prefix-message!)
+              user-msg (cond->> user-msg prefix (str prefix "\n\n"))]
+          (case agent
+            :pi     (spawn-pi-agent! model provider system-prompt additional cwd scope user-msg)
+            :claude (spawn-claude-agent! model provider system-prompt additional cwd scope user-msg)))
         (catch Throwable t
           (st/append-chat! :system (str "agent error: " (.getMessage t)))
           (a/>!! refresh-chan :refresh))
@@ -991,6 +991,9 @@
 
 (defn on-enter [state ds]
   (let [line (str/trim (:input state))]
+    (log/infof "on-enter fired: input=%s blank?=%s streaming?=%s focus=%s scope=%s agent=%s"
+               (pr-str line) (str/blank? line) (:streaming? state)
+               (:focus state) (:scope state) (:agent state))
     (when-not (str/blank? line)
       (st/push-input-history! line)
       (st/clear-input!)
@@ -1097,8 +1100,26 @@
         k                 (on-char state k)
         :else nil))))
 
+(defonce ^:private last-render-ns (atom 0))
+
+(def ^:private min-streaming-frame-ns
+  "Cap on-screen refresh at ~30 FPS while :streaming? is true. Under a burst of
+   tool events from claude/pi the event loop was rendering after every event,
+   spending all its time laying out :messages and starving input-chan drain."
+  (long 33e6))
+
 (defn do-render! [renderer]
-  (render/render! renderer (render-ui/render @st/state @state-width @state-height)))
+  (let [t0         (System/nanoTime)
+        state      @st/state
+        streaming? (:streaming? state)
+        gap-ns     (- t0 (long @last-render-ns))]
+    (when (or (not streaming?) (>= gap-ns min-streaming-frame-ns))
+      (reset! last-render-ns t0)
+      (render/render! renderer (render-ui/render state @state-width @state-height))
+      (let [dur-ms (/ (- (System/nanoTime) t0) 1e6)]
+        (when (> dur-ms 50)
+          (log/warnf "slow render: %.1fms streaming?=%s msg-count=%d activity-count=%d"
+                     dur-ms streaming? (count (:messages state)) (count (:activity state))))))))
 
 (defn start-input-thread! [^Terminal terminal keymap input-chan running?]
   (let [thread (Thread.
@@ -1138,7 +1159,12 @@
                                      :ctrl (:ctrl event)
                                      :alt (:alt event)
                                      :shift (:shift event)}))]
-                          (a/>!! input-chan m)))
+                          (let [t0 (System/nanoTime)]
+                            (a/>!! input-chan m)
+                            (let [dur-ms (/ (- (System/nanoTime) t0) 1e6)]
+                              (when (> dur-ms 100)
+                                (log/warnf "input-chan back-pressure: %.1fms to enqueue %s (event-loop can't keep up)"
+                                           dur-ms (:type m)))))))
                       (catch InterruptedException _
                         (reset! running? false))
                       (catch Exception _ nil)))))]
@@ -1267,15 +1293,22 @@
         (when (and @running? (not (:exit? @st/state)))
           (let [[v ch] (a/alts!! [input-chan refresh-chan (a/timeout 12)]
                                  :priority true)]
-            (when (= ch refresh-chan)
-              (do-render! renderer))
-            (when (= ch input-chan)
+            (cond
+              (= ch refresh-chan)
+              (do-render! renderer)
+
+              (= ch input-chan)
               (when v
                 (case (:type v)
                   :key   (process-key v)
                   :mouse (process-mouse v)
                   nil)
-                (do-render! renderer))))
+                (do-render! renderer))
+
+              ;; Timeout tick — cheap when throttle skips, but catches up on
+              ;; the last state change when refresh events stopped mid-window.
+              :else
+              (do-render! renderer)))
           (recur)))
       @st/state
       (finally

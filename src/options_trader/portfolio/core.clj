@@ -1,7 +1,9 @@
 (ns options-trader.portfolio.core
   (:require [clojure.core.async :as async]
+            [clojure.string :as str]
             [options-trader.data.ibkr :as ibkr]
-            [options-trader.db.queries.portfolio :as q]))
+            [options-trader.db.queries.portfolio :as q]
+            [taoensso.timbre :as log]))
 
 (defprotocol IPortfolioStore
   (read-positions [store account-id])
@@ -41,16 +43,20 @@
     (java.sql.Date/valueOf "1900-01-01")))
 
 (defn- upsert-positions! [ds account-id pos-seq]
-  (doseq [{:keys [symbol opt-right expiry strike qty avg-cost market-value unrealized-pnl]} pos-seq]
-    (q/upsert-position! ds {:account     account-id
-                             :symbol      symbol
-                             :opt-right   (or opt-right "")
-                             :expiry      (expiry->sql-date expiry)
-                             :strike      (or strike 0.0)
-                             :quantity    qty
-                             :avg-cost    avg-cost
-                             :market-val  market-value
-                             :unrealized  unrealized-pnl})))
+  (doseq [{:keys [symbol opt-right expiry strike qty avg-cost market-value unrealized-pnl conid]
+           :as row} pos-seq]
+    (if (str/blank? (str symbol))
+      (log/warnf "skipping position with no symbol (conid=%s account=%s qty=%s) — IB returned no security definition; row=%s"
+                 conid account-id qty (pr-str (dissoc row :type)))
+      (q/upsert-position! ds {:account     account-id
+                              :symbol      symbol
+                              :opt-right   (or opt-right "")
+                              :expiry      (expiry->sql-date expiry)
+                              :strike      (or strike 0.0)
+                              :quantity    qty
+                              :avg-cost    avg-cost
+                              :market-val  market-value
+                              :unrealized  unrealized-pnl}))))
 
 (defn- upsert-account-summary! [ds account-id {:keys [net-liq cash buying-power day-pl]}]
   (when net-liq
@@ -176,13 +182,42 @@
   (realized-pnl [_ _ _]
     (throw (UnsupportedOperationException. "realized-pnl: not implemented for IbkrSource"))))
 
+(defn- partition-positions
+  "Split IB position events into {:valid ... :orphan ...} by symbol presence."
+  [pos-seq]
+  (reduce (fn [acc row]
+            (if (str/blank? (str (:symbol row)))
+              (update acc :orphan conj row)
+              (update acc :valid conj row)))
+          {:valid [] :orphan []}
+          pos-seq))
+
 (defn refresh!
+  "Swap-in-place: within one transaction, wipe the account's cached positions
+   and write the current IB set. Positions IB can't hydrate (no security def →
+   blank symbol) are dropped instead of causing a NOT NULL crash; their conids
+   are logged so you can chase down the phantom in TWS.
+
+   Safety net: if `positions` returns nil (IB source unavailable or the stream
+   timed out), leave the cache alone rather than blanking a healthy portfolio
+   on a transient blip."
   [source ds account-id]
   (let [pos  (positions source)
         summ (account-summary source)]
-    (upsert-positions! ds account-id pos)
-    (upsert-account-summary! ds account-id summ)
-    {:positions (count pos) :account-id account-id}))
+    (if (nil? pos)
+      (do (log/warnf "portfolio refresh: positions source returned nil for account=%s — leaving DB cache untouched"
+                     account-id)
+          {:positions 0 :orphaned 0 :account-id account-id :skipped? true})
+      (let [{:keys [valid orphan]} (partition-positions pos)]
+        (doseq [row orphan]
+          (log/warnf "dropping phantom position (conid=%s account=%s qty=%s) — IB returned no security definition; row=%s"
+                     (:conid row) account-id (:qty row) (pr-str (dissoc row :type))))
+        (q/delete-positions-for-account! ds account-id)
+        (upsert-positions! ds account-id valid)
+        (upsert-account-summary! ds account-id summ)
+        {:positions (count valid)
+         :orphaned  (count orphan)
+         :account-id account-id}))))
 
 (defn make-source
   [{:keys [portfolio]} ib-client ds]

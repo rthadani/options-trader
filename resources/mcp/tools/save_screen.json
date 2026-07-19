@@ -1,0 +1,17 @@
+{
+  "name": "save_screen",
+  "description": "Persist a screener definition to the screens table AND write a .screen file under the user's screens directory. Confirm-gated: a first call (no `confirm`) returns a preview {name, universe, description, sql, existing?, file}. A second call with `confirm: true` writes. At least one of `description` (natural-language body) or `sql` (inline SQL body) must be supplied. Overwriting an existing screen requires `overwrite: true`.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "name":        {"type": "string", "description": "Unique screen name. Becomes the .screen filename (whitespace → dashes)."},
+      "description": {"type": "string", "description": "Natural-language body. The screener translates it to SQL on first run and caches by description-hash."},
+      "sql":         {"type": "string", "description": "Inline SQL body. When present, takes precedence over description at run time."},
+      "universe":    {"type": "string", "description": "Table/view the SQL runs against. Default \"latest_indicators\"."},
+      "tags":        {"type": "string", "description": "JSON-array literal of tag strings, e.g. \"[\\\"bearish\\\",\\\"iv-crush\\\"]\". Default \"[]\"."},
+      "overwrite":   {"type": "boolean", "description": "Required to replace an existing screen with the same name. Default false."},
+      "confirm":     {"type": "boolean", "description": "Must be true on the second call to actually write. Default false (preview)."}
+    },
+    "required": ["name"]
+  }
+}

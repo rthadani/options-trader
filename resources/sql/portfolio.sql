@@ -13,6 +13,9 @@ ON CONFLICT (account, symbol, opt_right, expiry, strike) DO UPDATE SET
   unrealized = excluded.unrealized,
   updated_at = excluded.updated_at;
 
+-- :name delete-positions-for-account :! :n
+DELETE FROM positions WHERE account = :account;
+
 -- :name insert-account-summary :! :n
 INSERT INTO account_summary (account, fetched_at, net_liq, cash, buying_power, day_pl)
 VALUES (:account, current_timestamp, :net-liq, :cash, :buying-power, :day-pl)

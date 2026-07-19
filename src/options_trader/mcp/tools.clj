@@ -5,9 +5,10 @@
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
             [options-trader.actions.core :as actions]
-            ;; Registers research / orders defmethods via actions/handle-action.
+            ;; Registers research / orders / screens defmethods via actions/handle-action.
             [options-trader.actions.research]
             [options-trader.actions.orders]
+            [options-trader.actions.screens]
             [options-trader.data.ibkr :as ibkr]
             [options-trader.db.queries.indicators :as qi]
             [options-trader.db.queries.portfolio :as qp]
@@ -21,7 +22,7 @@
     (json/parse-string (slurp res) true)))
 
 (def ^:private tool-names
-  ["portfolio_summary" "list_screens" "run_screen" "run_sql"
+  ["portfolio_summary" "list_screens" "run_screen" "save_screen" "run_sql"
    "get_indicators" "place_order" "cancel_order"
    ;; Read-only research tools for single-instrument deep dives.
    "fetch_news" "fetch_filings" "fetch_filing_body" "fetch_filing_item"
@@ -69,6 +70,18 @@
   (if ds
     (screener/run-query ds (:query args))
     (no-ds-error {:results []})))
+
+(defn- handle-save-screen [ds args]
+  (actions/handle-action
+    {:type        :save-screen
+     :ds          ds
+     :name        (:name args)
+     :description (:description args)
+     :sql         (:sql args)
+     :universe    (:universe args)
+     :tags        (:tags args)
+     :overwrite?  (boolean (:overwrite args))
+     :confirm?    (boolean (:confirm args))}))
 
 (defn- handle-get-indicators [ds args]
   (if ds
@@ -266,6 +279,7 @@
 (def ^:private db-tool-handlers
   {"list_screens"  #'handle-list-screens
    "run_screen"    #'handle-run-screen
+   "save_screen"   #'handle-save-screen
    "run_sql"       #'handle-run-sql
    "get_indicators" #'handle-get-indicators})
 
