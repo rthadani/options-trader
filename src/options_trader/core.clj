@@ -22,7 +22,7 @@
 (def cli-options
   [[nil  "--headless"        "Run without TUI"]
    [nil  "--check-config"    "Validate resources/config.edn and exit 0/1"]
-   ["-p" "--profile PROFILE" "Config profile" :default "dev"]
+   ["-p" "--profile PROFILE" "Config profile" :default "prod"]
    [nil  "--compact-threshold N"
          "Auto-compact when scope input-tokens exceed N (default 100000)"
          :parse-fn parse-long

@@ -7,12 +7,16 @@
 (def log-file "cache/logs/options-trader.log")
 
 (defn setup!
-  "Wire timbre to write to cache/logs/options-trader.log in addition to stdout."
-  []
-  (.mkdirs (io/file "cache/logs"))
-  (timbre/merge-config!
-    {:appenders
-     {:spit (appenders/spit-appender {:fname log-file})}}))
+  "Wire timbre to write to cache/logs/options-trader.log.
+   opts: :console? (default true) — set false in stdio subprocesses like the
+   MCP server where writing to stdout/stderr would corrupt the protocol."
+  ([] (setup! {}))
+  ([{:keys [console?] :or {console? true}}]
+   (.mkdirs (io/file "cache/logs"))
+   (timbre/merge-config!
+     {:appenders
+      (cond-> {:spit (appenders/spit-appender {:fname log-file})}
+        (not console?) (assoc :println {:enabled? false}))})))
 
 (defmacro info  [& args] `(timbre/info  ~@args))
 (defmacro warn  [& args] `(timbre/warn  ~@args))

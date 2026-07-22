@@ -16,7 +16,7 @@
 
 (def ^:private cli-options
   [["-h" "--help" "Show usage"]
-   ["-p" "--profile PROFILE" "Config profile" :default "dev"]
+   ["-p" "--profile PROFILE" "Config profile" :default "prod"]
    ["-u" "--universe NAME"   "Universe (sp500/nasdaq100/<user-file>...)" :default "sp500"]
    ["-s" "--symbols CSV"     "Comma-separated symbols (overrides --universe)"]
    ["-b" "--bar-size SIZE"   "Intraday bar size, e.g. \"15 mins\"" :default "15 mins"]

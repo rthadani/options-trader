@@ -4,7 +4,19 @@
    optional. Non-map returns are :unavailable (no connection / rejected)
    and :timeout. Construct via make-source — :type :ibkr / :mock /
    :unavailable."
-  (:require [options-trader.data.ibkr :as ibkr]))
+  (:require [options-trader.data.ibkr :as ibkr]
+            [taoensso.timbre :as log]))
+
+(defn- log-contract
+  "Compact contract summary for log lines — enough to correlate with a TWS
+   error 200 without dumping the whole map."
+  [c]
+  (if (= "OPT" (:sec-type c))
+    (format "%s/%s %s%s"
+            (:symbol c) (:last-trade-date-or-contract-month c)
+            (let [r (:right c)] (if (keyword? r) (name r) (str r)))
+            (:strike c))
+    (str (:symbol c) "/" (or (:sec-type c) "STK"))))
 
 (defprotocol IMarketDataSource
   (snapshot-stk [this symbol]
@@ -46,14 +58,30 @@
         rid (ibkr/req-market-data-snapshot
               ib-client contract tick-types (fn [evs] (deliver p evs)))]
     (cond
-      (= :unavailable rid) :unavailable
-      :else (let [evs (deref p timeout-ms ::timeout)]
-              (cond
-                (= ::timeout evs)
-                (do (try (ibkr/cancel-sub! ib-client rid) (catch Throwable _))
-                    :timeout)
-                (nil? evs) :timeout
-                :else      (assoc (ibkr/normalize-snapshot evs) :contract contract))))))
+      (= :unavailable rid)
+      (do (log/warnf "ib-snapshot rid=:unavailable contract=%s — IB client rejected the request (not connected? contract unresolvable?)"
+                     (log-contract contract))
+          :unavailable)
+
+      :else
+      (let [evs (deref p timeout-ms ::timeout)]
+        (cond
+          (= ::timeout evs)
+          (do (log/warnf "ib-snapshot rid=%s contract=%s TIMEOUT after %sms — no snapshot-end from TWS"
+                         rid (log-contract contract) timeout-ms)
+              (try (ibkr/cancel-sub! ib-client rid) (catch Throwable _))
+              :timeout)
+
+          (nil? evs)
+          (do (log/warnf "ib-snapshot rid=%s contract=%s TIMEOUT (nil events)"
+                         rid (log-contract contract))
+              :timeout)
+
+          :else
+          (let [snap (assoc (ibkr/normalize-snapshot evs) :contract contract)]
+            (log/debugf "ib-snapshot rid=%s contract=%s ok event-count=%d"
+                        rid (log-contract contract) (count evs))
+            snap))))))
 
 (defn- ib-stream
   "Open a streaming market-data subscription, collect ticks for `collect-ms`,
@@ -66,12 +94,19 @@
                :tick-types tick-types :snapshot false}
               (fn [ev] (when (map? ev) (swap! acc conj ev))))]
     (cond
-      (= :unavailable rid) :unavailable
+      (= :unavailable rid)
+      (do (log/warnf "ib-stream rid=:unavailable contract=%s — IB client rejected the subscription"
+                     (log-contract contract))
+          :unavailable)
+
       :else
       (try
         (Thread/sleep (long collect-ms))
-        (let [snap (ibkr/normalize-snapshot @acc)]
-          (assoc snap :contract contract :event-count (count @acc)))
+        (let [snap (ibkr/normalize-snapshot @acc)
+              n    (count @acc)]
+          (log/debugf "ib-stream rid=%s contract=%s collected event-count=%d over %sms"
+                      rid (log-contract contract) n collect-ms)
+          (assoc snap :contract contract :event-count n))
         (finally
           (try (ibkr/cancel-sub! ib-client rid) (catch Throwable _)))))))
 
@@ -85,14 +120,21 @@
                                         (double underlying-price)
                                         (fn [ev] (when (map? ev) (swap! acc conj ev))))]
     (cond
-      (= :unavailable rid) :unavailable
+      (= :unavailable rid)
+      (do (log/warnf "ib-calc-iv rid=:unavailable contract=%s opt-px=%s und-px=%s — IB client rejected the calc request"
+                     (log-contract contract) option-price underlying-price)
+          :unavailable)
+
       :else
       (try
         (Thread/sleep (long collect-ms))
-        (let [snap (ibkr/normalize-snapshot @acc)]
+        (let [snap (ibkr/normalize-snapshot @acc)
+              n    (count @acc)]
+          (log/debugf "ib-calc-iv rid=%s contract=%s opt-px=%s und-px=%s event-count=%d"
+                      rid (log-contract contract) option-price underlying-price n)
           (assoc snap
                  :contract         contract
-                 :event-count      (count @acc)
+                 :event-count      n
                  :option-price     (double option-price)
                  :underlying-price (double underlying-price)))
         (finally

@@ -231,10 +231,10 @@
                                         :strike identity, :expiry identity, :right identity
                                         :exchange identity, :currency identity
                                         :tick_types :tick_types}
-                               :source :options-source}
+                               :source :md-source}
   "fetch_quote"              {:type   :research/fetch-quote
                                :keys   {:ib-client :ib-client, :symbol identity }
-                               :source :options-source}})
+                               :source :md-source}})
 
 
 (defn- build-research-request

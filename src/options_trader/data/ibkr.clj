@@ -341,7 +341,8 @@
           (case mode
             :batch  (accumulate! rid warn)
             :stream (try (cb warn) (catch Throwable _)))
-          (log/debugf "ibkr warning code=%s msg=%s" (:code event) (:message event)))
+          (log/debugf "ibkr warning rid=%s code=%s msg=%s"
+                      rid (:code event) (:message event)))
 
         ;; Stream subscriptions should survive most errors — a stray TWS
         ;; error tagged with our rid used to dissoc the pending entry, which
@@ -350,8 +351,8 @@
         (and entry (= t :error) (= :stream (:mode entry)))
         (let [warn {:type :warning :code (:code event) :message (:message event)}]
           (try ((:cb entry) warn) (catch Throwable _))
-          (log/debugf "ibkr stream warning code=%s msg=%s preserved subscription"
-                      (:code event) (:message event)))
+          (log/debugf "ibkr stream warning rid=%s code=%s msg=%s preserved subscription"
+                      rid (:code event) (:message event)))
 
         (and entry (= t :error))
         (do

@@ -14,7 +14,8 @@
             [options-trader.data.options      :as options]
             [options-trader.data.market-data  :as md]
             [options-trader.data.quotes       :as quotes]
-            [options-trader.data.ibkr         :as ibkr]))
+            [options-trader.data.ibkr         :as ibkr]
+            [taoensso.timbre                  :as log]))
 
 (def ^:private default-timeout-ms 15000)
 
@@ -199,6 +200,8 @@
 (defmethod actions/handle-action :research/fetch-option-chain
   [{:keys [symbol expiry-prefix timeout-ms] :as action
     :or   {timeout-ms default-timeout-ms}}]
+  (log/infof "fetch-option-chain start symbol=%s expiry-prefix=%s timeout-ms=%s src=%s"
+             symbol expiry-prefix timeout-ms (type (opts-src action)))
   (let [src    (opts-src action)
         events (await-once
                  (fn [cb]
@@ -207,13 +210,36 @@
         evs    (:result events)
         rich   (some :contracts evs)
         quote* (some :quote evs)]
-    {:ok true
-     :result (cond
-               (:error events) (assoc events :symbol symbol)
-               :else (cond-> (-> (collapse-chain evs expiry-prefix)
-                                 (assoc :symbol symbol))
-                       rich   (assoc :contracts rich)
-                       quote* (assoc :quote     quote*)))}))
+    (cond
+      (:error events)
+      (do (log/warnf "fetch-option-chain FAIL symbol=%s error=%s src=%s — for IBKR check TWS logs for error 200 (unknown symbol) or 321 (bad expiry/right); for Yahoo check upstream response"
+                     symbol (:error events) (.getSimpleName (class src)))
+          {:ok false :error (:error events) :symbol symbol :source (.getSimpleName (class src))
+           :message (case (:error events)
+                      :unavailable (format "options source (%s) rejected the request — for IBKR: TWS not connected or the symbol's conid did not resolve; for Yahoo: upstream returned no chain"
+                                           (.getSimpleName (class src)))
+                      :timeout     (format "no security-definition-optional-parameter events within %sms from %s"
+                                           timeout-ms (.getSimpleName (class src)))
+                      (str "chain fetch failed: " (:error events)))})
+
+      (empty? evs)
+      (do (log/warnf "fetch-option-chain EMPTY symbol=%s — request returned but no per-exchange chain events; the underlying may not have listed options"
+                     symbol)
+          {:ok false :error :no-chain :symbol symbol
+           :message (str "no option chain returned for " symbol)})
+
+      :else
+      (let [collapsed (-> (collapse-chain evs expiry-prefix) (assoc :symbol symbol))]
+        (log/infof "fetch-option-chain ok symbol=%s exchanges=%d expirations=%d strikes=%d expiry-prefix=%s"
+                   symbol
+                   (count (:exchanges collapsed))
+                   (count (:expirations collapsed))
+                   (count (:strikes collapsed))
+                   expiry-prefix)
+        {:ok true
+         :result (cond-> collapsed
+                   rich   (assoc :contracts rich)
+                   quote* (assoc :quote     quote*))}))))
 
 (defmethod actions/handle-action :research/fetch-quote
   [{:keys [ib-client source ds symbol avg-window]
@@ -251,6 +277,20 @@
     ("p" "put"  ":put")  :put
     r))
 
+(defn- derive-price
+  "Single canonical price + a tag telling the caller where it came from.
+   Priority: mid (bid AND ask) → last → close. Returns {:price :price-source}
+   with nil price when nothing is available."
+  [q]
+  (let [bid (:bid q) ask (:ask q) last* (:last q) close (:close q)]
+    (cond
+      (and (number? bid) (number? ask))
+      {:price (/ (+ (double bid) (double ask)) 2.0) :price-source :mid}
+
+      (number? last*) {:price (double last*)  :price-source :last}
+      (number? close) {:price (double close)  :price-source :close}
+      :else           {:price nil             :price-source :none})))
+
 (defmethod actions/handle-action :research/fetch-option-quote
   [{:keys [ib-client source symbol strike expiry right exchange currency]
     :or   {exchange "SMART" currency "USD"}}]
@@ -259,24 +299,41 @@
                   (md/make-source {:type :unavailable}))
         opts {:symbol symbol :expiry expiry :strike strike :right right
               :exchange exchange :currency currency}
+        tag  (format "%s/%s %s%s" symbol expiry right strike)
+        _    (log/infof "fetch-option-quote start contract=%s src=%s"
+                        tag (type src))
         ;; Snapshot mode: TWS sends cached state + tick-snapshot-end. Reliable
         ;; for prev-session close + bid/ask after-hours; greeks rarely arrive.
         q0   (quotes/option-quote-snapshot src opts)
+        need-greeks? (and (map? q0) (nil? (:iv q0)) (nil? (:delta q0)))
         ;; Hand TWS the close prices and let it back out IV + greeks — works
         ;; any time of day, no live market data needed.
-        q    (if (and (map? q0) (nil? (:iv q0)) (nil? (:delta q0)))
+        q    (if need-greeks?
                (let [calc (quotes/calc-option-greeks src opts)]
                  (if (map? calc) (merge q0 calc) q0))
                q0)]
     (cond
       (= :unavailable q)
-      {:ok false :error :unavailable
-       :message "market-data source rejected the OPT request"}
+      (do (log/warnf "fetch-option-quote FAIL contract=%s stage=snapshot result=:unavailable — check TWS logs for error 200 (no security definition) or 354 (no market data permission)"
+                     tag)
+          {:ok false :error :unavailable
+           :message "market-data source rejected the OPT request"})
 
       (= :timeout q)
-      {:ok false :error :timeout
-       :message "no snapshot end within the source's window"}
+      (do (log/warnf "fetch-option-quote FAIL contract=%s stage=snapshot result=:timeout — TWS did not send tick-snapshot-end within window"
+                     tag)
+          {:ok false :error :timeout
+           :message "no snapshot end within the source's window"})
 
       :else
-      {:ok     true
-       :result (merge {:symbol symbol :strike strike :expiry expiry :right right} q)})))
+      (do (when need-greeks?
+            (log/infof "fetch-option-quote contract=%s snapshot ok but no greeks; calc-iv %s"
+                       tag (if (map? q) "merged" (str q))))
+          (let [priced (merge q (derive-price q))]
+            (log/infof "fetch-option-quote ok contract=%s bid=%s ask=%s last=%s close=%s price=%s(%s) iv=%s delta=%s"
+                       tag (:bid priced) (:ask priced) (:last priced) (:close priced)
+                       (:price priced) (name (:price-source priced))
+                       (:iv priced) (:delta priced))
+            {:ok     true
+             :result (merge {:symbol symbol :strike strike :expiry expiry :right right}
+                            priced)})))))

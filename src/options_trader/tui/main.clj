@@ -63,7 +63,7 @@
         mode (port->mode port)
         warn? (#{:paper-tws :paper-gateway :unknown} mode)]
     (str (if warn? "⚠  " "✅ ")
-         "profile=" (or profile "dev")
+         "profile=" (or profile "prod")
          "  ib=" host ":" port
          "  mode=" (name mode)
          "  client-id=" client-id)))

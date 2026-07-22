@@ -4,12 +4,14 @@
             [options-trader.data.edgar       :as edgar]
             [options-trader.data.fundamentals :as fundamentals]
             [options-trader.data.ibkr        :as ibkr]
+            [options-trader.data.market-data :as md]
             [options-trader.data.news        :as news]
             [options-trader.data.options     :as options]
             [options-trader.data.orders      :as orders]
             [options-trader.data.short-interest :as short-interest]
             [options-trader.data.sources     :as sources]
             [options-trader.db.duckdb        :as duckdb]
+            [options-trader.logging          :as logging]
             [options-trader.mcp.protocol     :as protocol]
             [options-trader.mcp.tools        :as tools])
   (:gen-class))
@@ -77,7 +79,8 @@
         nil))))
 
 (defn -main [& _args]
-  (let [profile (or (System/getenv "OPTIONS_TRADER_PROFILE") "dev")
+  (logging/setup! {:console? false})
+  (let [profile (or (System/getenv "OPTIONS_TRADER_PROFILE") "prod")
         cfg     (try (config/load-config profile)
                      (catch Throwable t
                        (binding [*out* *err*]
@@ -114,7 +117,12 @@
                                {:type :duckdb-cache :ds ds})
              :short-interest (short-interest/make-source
                                {:type :duckdb-cache :ds ds})})))
-      (let [ctx (cond-> {:options-source (options/make-source {:type :yahoo})
+      (let [ctx (cond-> {:options-source (if ib-client
+                                           (options/make-source {:type :ibkr :ib-client ib-client})
+                                           (options/make-source {:type :yahoo}))
+                         :md-source      (if ib-client
+                                           (md/make-source {:type :ibkr :ib-client ib-client})
+                                           (md/make-source {:type :unavailable}))
                          :order-source   (orders/make-source
                                            {:type :ibkr :ib-client ib-client})}
                   ds        (assoc :ds ds)
