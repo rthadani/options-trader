@@ -1,6 +1,7 @@
 # Build artifacts
 .cpcache/
 target/
+.pi/
 
 # Database and logs
 cache/

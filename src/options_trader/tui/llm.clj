@@ -195,9 +195,9 @@
   "One-shot pi CLI invocation (`pi -p`). Used by complete when :agent is :pi.
    pi has its own provider set (openai/moonshotai/…); :claude is meaningless
    to pi, so we only forward --provider when it's in pi-known-providers."
-  [{:keys [model system sh-fn] :or {sh-fn shell/sh}} prompt]
+  [{:keys [model provider system sh-fn] :or {sh-fn shell/sh}} prompt]
   (let [m    (or model @active-model)
-        p    @active-provider
+        p    (or provider @active-provider)
         full (with-system system prompt)
         args (cond-> ["pi" "-p"]
                (contains? pi-known-providers p) (concat ["--provider" (name p)])

@@ -764,7 +764,7 @@
                          "\n\n=== CONVERSATION ===\n"
                          transcript
                          "\n=== END ===")
-            summary (llm/complete {} prompt)]
+            summary (llm/complete {:provider (:provider @st/state)} prompt)]
         (conv/clear-claude-session! scope)
         (conv/clear-pi-session! scope)
         (st/clear-chat!)

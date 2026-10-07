@@ -66,10 +66,11 @@
   (str (config-root) "/runtime-pi"))
 
 (defn pi-mcp-file
-  "Path to the pi MCP config file (passed as --mcp-config). Seeded from
+  "Path to the pi project-local MCP config file (.pi/mcp.json). pi reads
+   this automatically when --approve is passed. Seeded from
    resources/runtime/pi/mcp.json on init."
   []
-  (str (runtime-pi-dir) "/mcp.json"))
+  (str (System/getProperty "user.dir") "/.pi/mcp.json"))
 
 (defn pi-session-dir
   "Where pi stores its session JSONL files (passed as --session-dir)."

@@ -120,14 +120,14 @@
     (.getAbsolutePath target)))
 
 (defn- seed-runtime-pi!
-  "Seed <config-root>/runtime-pi/mcp.json from the packaged resource and
-   ensure the sessions dir exists, so the TUI's pi subprocess can be
-   spawned with --mcp-config and --session-dir pointing into our config."
+  "Seed .pi/mcp.json from the packaged resource and ensure the sessions dir
+   exists. pi reads .pi/mcp.json automatically when --approve is passed."
   []
   (let [dir (paths/ensure-dir! (paths/runtime-pi-dir))]
     (paths/ensure-dir! (paths/pi-session-dir))
-    (seed-from-resource! "runtime/pi/mcp.json"
-                         (io/file dir "mcp.json"))
+    (let [mcp-file (io/file (paths/pi-mcp-file))]
+      (paths/ensure-dir! (str (.getParent mcp-file)))
+      (seed-from-resource! "runtime/pi/mcp.json" mcp-file))
     dir))
 
 (defn- seed-packaged-screens!

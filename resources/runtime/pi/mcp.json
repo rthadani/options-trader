@@ -2,7 +2,11 @@
   "mcpServers": {
     "options-trader": {
       "command": "clojure",
-      "args": ["-M:mcp-server"]
+      "args": [
+        "-M:mcp-server"
+      ],
+      "exposure": "direct",
+      "description": "options-trader portfolio, screener, and market data tools"
     }
   }
 }

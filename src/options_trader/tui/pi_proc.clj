@@ -1,9 +1,9 @@
 (ns options-trader.tui.pi-proc
   "Pi-CLI subprocess (`pi -p --mode json`). Mirrors claude-proc, with pi's
    defaults intact plus three overrides: --session-dir for isolated per-scope
-   resume, --mcp-config for the options-trader MCP server, and explicit
-   --skill paths layered on top. Never --no-extensions (would disable
-   mcp-bridge) or --no-skills."
+   resume, --approve to load .pi/mcp.json for the options-trader MCP server,
+   and explicit --skill paths layered on top. Never --no-extensions (would
+   disable mcp-bridge) or --no-skills."
   (:require [cheshire.core         :as json]
             [clojure.java.io       :as io]
             [clojure.string        :as str]
@@ -24,7 +24,7 @@
 
    The spawn is isolated from ~/.pi via --no-skills/--no-extensions; sessions
    land in paths/pi-session-dir; the options-trader MCP server is registered
-   via --mcp-config pointing at paths/pi-mcp-file when present."
+   via .pi/mcp.json in the project root, loaded when --approve is passed."
   [{:keys [model provider system-prompt cwd additional-dirs session-id]
     :or   {cwd "."}}]
   (let [session-dir (paths/ensure-dir! (paths/pi-session-dir))
@@ -33,7 +33,7 @@
     {:cmd (cond-> ["pi" "-p" "--mode" "json"
                    "--session-dir" session-dir]
             session-id    (conj "--session-id" session-id)
-            mcp?          (conj "--mcp-config" mcp-file)
+            mcp?          (conj "--approve")
             provider      (conj "--provider" (name provider))
             model         (conj "--model" model)
             system-prompt (conj "--system-prompt" system-prompt)
