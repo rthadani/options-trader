@@ -1,7 +1,7 @@
 (ns options-trader.data.options
   (:require [clj-yfinance.experimental.options :as yfo]
             [options-trader.data.ibkr :as ibkr]
-            [taoensso.timbre :as log])
+            [taoensso.timbre          :as log])
   (:import [java.time Instant ZoneOffset]))
 
 (defprotocol IOptionsSource
@@ -26,13 +26,21 @@
   [ib-client underlying]
   (if-let [c (:conid underlying)]
     (int c)
-    (let [p (promise)]
+    (let [sym (:symbol underlying)
+          p   (promise)]
+      (log/debugf "resolve-conid! requesting contract details for %s" sym)
       (ibkr/req-contract-details ib-client
         (ibkr/->contract underlying)
         (fn [events] (deliver p events)))
       (let [evs (deref p 10000 nil)
             cd  (first evs)]
-        (some-> (or (:conid cd) (get-in cd [:contract :conid])) int)))))
+        (if (nil? evs)
+          (do (log/warnf "resolve-conid! TIMEOUT for %s — TWS sent no contract-details within 10s; check data farm connection on MCP client" sym)
+              nil)
+          (let [conid (some-> (or (:conid cd) (get-in cd [:contract :conid])) int)]
+            (when-not conid
+              (log/warnf "resolve-conid! got events for %s but no conid: %s" sym (first evs)))
+            conid))))))
 
 (deftype IbkrOptionsSource [ib-client]
   IOptionsSource

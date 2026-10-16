@@ -302,9 +302,10 @@
         tag  (format "%s/%s %s%s" symbol expiry right strike)
         _    (log/infof "fetch-option-quote start contract=%s src=%s"
                         tag (type src))
-        ;; Snapshot mode: TWS sends cached state + tick-snapshot-end. Reliable
-        ;; for prev-session close + bid/ask after-hours; greeks rarely arrive.
-        q0   (quotes/option-quote-snapshot src opts)
+        ;; Streaming mode: opens a subscription, collects for 5 s, cancels.
+        ;; More reliable than snapshot for options because tick-snapshot-end
+        ;; is unreliable for OPT contracts (acknowledged in ibkr.clj).
+        q0   (quotes/option-quote src opts :collect-ms 5000)
         need-greeks? (and (map? q0) (nil? (:iv q0)) (nil? (:delta q0)))
         ;; Hand TWS the close prices and let it back out IV + greeks — works
         ;; any time of day, no live market data needed.
@@ -314,20 +315,14 @@
                q0)]
     (cond
       (= :unavailable q)
-      (do (log/warnf "fetch-option-quote FAIL contract=%s stage=snapshot result=:unavailable — check TWS logs for error 200 (no security definition) or 354 (no market data permission)"
+      (do (log/warnf "fetch-option-quote FAIL contract=%s stage=stream result=:unavailable — check TWS logs for error 200 (no security definition) or 354 (no market data permission)"
                      tag)
           {:ok false :error :unavailable
            :message "market-data source rejected the OPT request"})
 
-      (= :timeout q)
-      (do (log/warnf "fetch-option-quote FAIL contract=%s stage=snapshot result=:timeout — TWS did not send tick-snapshot-end within window"
-                     tag)
-          {:ok false :error :timeout
-           :message "no snapshot end within the source's window"})
-
       :else
       (do (when need-greeks?
-            (log/infof "fetch-option-quote contract=%s snapshot ok but no greeks; calc-iv %s"
+            (log/infof "fetch-option-quote contract=%s stream ok but no greeks; calc-iv %s"
                        tag (if (map? q) "merged" (str q))))
           (let [priced (merge q (derive-price q))]
             (log/infof "fetch-option-quote ok contract=%s bid=%s ask=%s last=%s close=%s price=%s(%s) iv=%s delta=%s"

@@ -72,7 +72,16 @@
   (when-let [{:keys [host port]} (:ibkr cfg)]
     (try
       (let [c (ibkr/connect! host port mcp-client-id)]
-        (when (not= :unavailable c) c))
+        (when (not= :unavailable c)
+          ;; Tell TWS to serve delayed data when live is unavailable (paper accounts).
+          ;; Without this call the connection defaults to :live, which causes TWS to
+          ;; silently ignore or time out snapshot and option-chain requests for
+          ;; accounts without live market data subscriptions.
+          (try (ibkr/set-market-data-type! c :delayed-frozen)
+               (catch Throwable t
+                 (binding [*out* *err*]
+                   (println "warning: MCP set-market-data-type! failed —" (.getMessage t)))))
+          c))
       (catch Throwable t
         (binding [*out* *err*]
           (println "warning: MCP failed to open IB connection —" (.getMessage t)))
