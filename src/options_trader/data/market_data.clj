@@ -159,7 +159,9 @@
   IMarketDataSource
   (snapshot-stk [_ symbol]
     (if ib-client
-      (ib-snapshot ib-client (ibkr/->contract symbol) ibkr/all-generic-ticks 5000)
+      ;; Streaming with a 3-second time-box is more reliable than snapshot
+      ;; mode (which waits for tick-snapshot-end, known to arrive before ticks).
+      (ib-stream ib-client (ibkr/->contract symbol) ibkr/all-generic-ticks 3000)
       :unavailable))
   (snapshot-opt [_ opts]
     (if ib-client

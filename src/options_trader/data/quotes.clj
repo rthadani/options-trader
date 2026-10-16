@@ -55,6 +55,7 @@
   (let [snap (md/snapshot-stk src symbol)]
     (cond
       (= :unavailable snap) :unavailable
+      (= :timeout snap)     :timeout
       :else
       (let [snap        (if (map? snap) snap {})
             day-volume  (or (:rt-volume snap) (:volume snap))
