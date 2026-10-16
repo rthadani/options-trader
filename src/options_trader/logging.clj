@@ -14,7 +14,8 @@
   ([{:keys [console?] :or {console? true}}]
    (.mkdirs (io/file "cache/logs"))
    (timbre/merge-config!
-     {:appenders
+     {:min-level :info
+      :appenders
       (cond-> {:spit (appenders/spit-appender {:fname log-file})}
         (not console?) (assoc :println {:enabled? false}))})))
 
