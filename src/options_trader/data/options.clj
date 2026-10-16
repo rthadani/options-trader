@@ -45,15 +45,12 @@
 (deftype IbkrOptionsSource [ib-client]
   IOptionsSource
   (req-chain [_ underlying expiry callback]
-    (let [conid (resolve-conid! ib-client underlying)]
-      (if-not conid
-        (do (callback [{:type :error
-                        :message (str "could not resolve conid for "
-                                      (:symbol underlying))}])
-            :unavailable)
-        (ibkr/req-option-chain ib-client
-                                (assoc underlying :conid conid)
-                                expiry callback))))
+    (let [conid (resolve-conid! ib-client underlying)
+          ;; reqSecDefOptParams accepts conid=0 (symbol-only lookup).
+          ;; Proceed even when contract-details resolution fails or times out;
+          ;; TWS resolves the chain from the symbol alone in that case.
+          und   (if conid (assoc underlying :conid conid) underlying)]
+      (ibkr/req-option-chain ib-client und expiry callback)))
   (req-contract-details [_ contract callback]
     (ibkr/req-contract-details ib-client contract callback)))
 
