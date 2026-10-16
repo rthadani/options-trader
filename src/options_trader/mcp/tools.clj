@@ -227,14 +227,15 @@
                                :keys   {:symbol identity :expiry_prefix :expiry_prefix}
                                :source :options-source}
    "fetch_option_quote"      {:type   :research/fetch-option-quote
-                               :keys   {:ib-client :ib-client, :symbol identity
+                               :keys   {:symbol identity
                                         :strike identity, :expiry identity, :right identity
                                         :exchange identity, :currency identity
                                         :tick_types :tick_types}
                                :source :md-source}
-  "fetch_quote"              {:type   :research/fetch-quote
-                               :keys   {:ib-client :ib-client, :symbol identity }
-                               :source :md-source}})
+  "fetch_quote"              {:type     :research/fetch-quote
+                               :keys     {:symbol identity}
+                               :source   :md-source
+                               :ctx-keys [:ds]}})
 
 
 (defn- build-research-request
@@ -265,6 +266,10 @@
                (if-let [src-val (get ctx src-key)]
                  (assoc base :source src-val)
                  base)
+               base)
+        base (if-let [ctx-keys (:ctx-keys spec)]
+               (reduce (fn [m k] (if-some [v (get ctx k)] (assoc m k v) m))
+                       base ctx-keys)
                base)]
     base))
 
