@@ -2,6 +2,7 @@
   "Per-symbol detailed quote: live IMarketDataSource snapshot fused with
    DB-derived metrics (avg volume, put/call ratios, intraday VWAP)."
   (:require [options-trader.data.market-data :as md]
+            [options-trader.db.queries.indicators :as qi]
             [options-trader.db.queries.quotes :as q]
             [taoensso.timbre :as log]))
 
@@ -60,8 +61,13 @@
       :else
       (let [snap        (if (map? snap) snap {})
             event-count (:event-count snap 0)
-            _           (log/infof "snapshot-stk %s: event-count=%d data-mode=%s warnings=%d"
-                                   symbol event-count (:data-mode snap) (count (:warnings snap [])))
+            no-prices?  (not (some snap [:bid :ask :last :close]))
+            _           (log/infof "snapshot-stk %s: event-count=%d data-mode=%s warnings=%d no-prices=%s"
+                                   symbol event-count (:data-mode snap) (count (:warnings snap [])) no-prices?)
+            ;; Fall back to latest_indicators.close when IB returns no price data
+            ;; (paper account, data farm not connected for this client-id, etc.).
+            db-close    (when (and no-prices? ds)
+                          (try (qi/latest-close ds symbol) (catch Throwable _ nil)))
             day-volume  (or (:rt-volume snap) (:volume snap))
             avg-vol     (avg-volume ds symbol avg-window)
             vwap        (resolve-vwap snap ds symbol src)
@@ -72,9 +78,10 @@
                                 [:bid :ask :last :open :high :low :close
                                  :bid-size :ask-size :last-size
                                  :data-mode :warnings]))
-            (cond-> day-volume (assoc :day-volume day-volume)
-                    vwap       (assoc :day-vwap (double vwap))
-                    avg-vol    (assoc avg-key (double avg-vol))
+            (cond-> db-close  (assoc :close db-close :close-source :db)
+                    day-volume        (assoc :day-volume day-volume)
+                    vwap              (assoc :day-vwap (double vwap))
+                    avg-vol           (assoc avg-key (double avg-vol))
                     (and day-volume avg-vol (pos? avg-vol))
                     (assoc :volume-ratio (/ (double day-volume) (double avg-vol))))
             (merge pc))))))

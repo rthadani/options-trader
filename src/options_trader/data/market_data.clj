@@ -84,17 +84,14 @@
             snap))))))
 
 (defn- ib-stream
-  "Open a market-data subscription, collect ticks for `collect-ms`, then cancel.
-   snapshot=true pushes the current state immediately (correct for one-shot quotes);
-   snapshot=false opens a persistent stream of updates (correct for option greeks).
-   Either way we use stream dispatch so tick-snapshot-end never terminates us early.
-   Returns a quote map or :unavailable."
-  [ib-client contract tick-types collect-ms & {:keys [snapshot] :or {snapshot false}}]
+  "Open a streaming market-data subscription, collect ticks for `collect-ms`,
+   then cancel. Returns a quote map or :unavailable."
+  [ib-client contract tick-types collect-ms]
   (let [acc (atom [])
         rid (ibkr/dispatch-stream!
               ib-client
               {:type :req-market-data :contract contract
-               :tick-types tick-types :snapshot snapshot}
+               :tick-types tick-types :snapshot false}
               (fn [ev] (when (map? ev) (swap! acc conj ev))))]
     (cond
       (= :unavailable rid)
@@ -107,12 +104,6 @@
         (Thread/sleep (long collect-ms))
         (let [snap (ibkr/normalize-snapshot @acc)
               n    (count @acc)]
-          (when (zero? n)
-            (log/warnf "ib-stream rid=%s contract=%s snapshot=%s: zero events in %sms — TWS sent nothing (check market data type and data farm connection)"
-                       rid (log-contract contract) snapshot collect-ms))
-          (when (seq (:warnings snap))
-            (log/warnf "ib-stream rid=%s contract=%s warnings=%s"
-                       rid (log-contract contract) (:warnings snap)))
           (log/debugf "ib-stream rid=%s contract=%s collected event-count=%d over %sms"
                       rid (log-contract contract) n collect-ms)
           (assoc snap :contract contract :event-count n))
@@ -168,11 +159,9 @@
   IMarketDataSource
   (snapshot-stk [_ symbol]
     (if ib-client
-      ;; snapshot=true makes TWS push the current state immediately rather than
-      ;; waiting for a price change — critical for delayed-frozen mode where the
-      ;; market is closed and a pure streaming subscription delivers nothing.
-      ;; We use stream dispatch (not batch) so tick-snapshot-end doesn't race the ticks.
-      (ib-stream ib-client (ibkr/->contract symbol) ibkr/all-generic-ticks 3000 :snapshot true)
+      ;; Streaming with a 3-second time-box is more reliable than snapshot
+      ;; mode (which waits for tick-snapshot-end, known to arrive before ticks).
+      (ib-stream ib-client (ibkr/->contract symbol) ibkr/all-generic-ticks 3000)
       :unavailable))
   (snapshot-opt [_ opts]
     (if ib-client
