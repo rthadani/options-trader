@@ -477,7 +477,12 @@
    8   :volume    74 :volume
    0   :bid-size  69 :bid-size
    3   :ask-size  70 :ask-size
-   5   :last-size 71 :last-size})
+   5   :last-size 71 :last-size
+   ;; option aggregate ticks (generic tick groups 100 and 101)
+   27  :call-oi
+   28  :put-oi
+   29  :call-volume
+   30  :put-volume})
 
 (def ^:private opt-comp-prefix
   "tick-option-computation field codes → greek-bundle prefix."
@@ -580,7 +585,11 @@
       (:model-delta m) (assoc :delta (:model-delta m))
       (:model-gamma m) (assoc :gamma (:model-gamma m))
       (:model-theta m) (assoc :theta (:model-theta m))
-      (:model-vega m)  (assoc :vega  (:model-vega m)))))
+      (:model-vega m)  (assoc :vega  (:model-vega m))
+      (and (:put-oi m) (:call-oi m) (pos? (:call-oi m)))
+      (assoc :pc-oi-ratio (/ (double (:put-oi m)) (double (:call-oi m))))
+      (and (:put-volume m) (:call-volume m) (pos? (:call-volume m)))
+      (assoc :pc-vol-ratio (/ (double (:put-volume m)) (double (:call-volume m)))))))
 
 ;; MUST be sequences (vectors of ints), NOT comma-separated strings —
 ;; ib-re-actor's `:to-ib :tick-list` translation does `(map ... val)` which

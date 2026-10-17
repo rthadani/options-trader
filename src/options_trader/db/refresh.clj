@@ -11,6 +11,7 @@
             [options-trader.data.edgar       :as edgar]
             [options-trader.data.fundamentals :as fundamentals]
             [options-trader.data.yfinance    :as yf]
+            [options-trader.db.queries.indicators :as qi]
             [options-trader.db.queries.refresh :as q]
             [options-trader.indicators.engine :as indicators]
             [options-trader.portfolio.core   :as portfolio]
@@ -644,6 +645,31 @@
             (do (q/upsert-short-interest! ds row) {:rows 1})
             nil)
           nil)))))
+
+
+(defn refresh-pc-ratios!
+  "Fetch put/call OI and volume for each symbol via IB reqMktData (generic
+   ticks 100 and 101), then upsert put_call_oi_ratio and put_call_volume_ratio
+   into latest_indicators. Collects ticks for 3 s per symbol using snapshot
+   mode so TWS pushes current state immediately. Skips symbols where IB
+   returns nothing (no-subscription, market closed with no data, etc.)."
+  [{:keys [conn ds symbols timeout-ms] :or {timeout-ms 5000}}]
+  (qi/ensure-double-columns! ds [:put_call_oi_ratio :put_call_volume_ratio])
+  (with-log ds :pc-ratios nil
+    (each-symbol! :pc-ratios symbols
+      (fn [sym]
+        (let [acc (ibkr/start-snapshot! conn (ibkr/->contract sym))
+              _   (Thread/sleep 3000)
+              snap (ibkr/normalize-snapshot @acc)]
+          (let [pc-oi  (:pc-oi-ratio snap)
+                pc-vol (:pc-vol-ratio snap)]
+            (if (or pc-oi pc-vol)
+              (do (qi/upsert-latest-row! ds sym
+                    (cond-> {}
+                      pc-oi  (assoc :put_call_oi_ratio pc-oi)
+                      pc-vol (assoc :put_call_volume_ratio pc-vol)))
+                  {:rows 1})
+              nil)))))))
 
 
 (defn refresh-earnings!

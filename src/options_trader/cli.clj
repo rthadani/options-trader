@@ -45,6 +45,7 @@
   (println "  refresh-fundamentals EDGAR-backed fundamentals + ratios")
   (println "  refresh-filings      EDGAR filing list per symbol")
   (println "  refresh-iv-daily     IB daily IV30 + HV30 series → iv_daily")
+  (println "  refresh-pc-ratios    IB put/call OI + volume ratios → latest_indicators")
   (println "  refresh-short-interest  Yahoo short-interest snapshot → short_interest")
   (println "  refresh-earnings     Yahoo earnings history + calendar")
   (println "  refresh-universes    Re-fetch universe membership; log drift")
@@ -147,6 +148,16 @@
                                   :ibkr-config ibkr})
       (finally (when-not (:conn opts) (try (ibkr/disconnect!) (catch Throwable _)))))))
 
+(defmethod run-subcommand :refresh-pc-ratios [_ opts _]
+  (let [cfg     (when-not (and (:conn opts) (:ds opts))
+                  (config/load-config (:profile opts)))
+        ds      (or (:ds opts) (open-ds! cfg))
+        conn    (or (:conn opts) (open-ib! cfg))
+        symbols (resolve-symbols opts ds)]
+    (try
+      (refresh/refresh-pc-ratios! {:conn conn :ds ds :symbols symbols})
+      (finally (when-not (:conn opts) (try (ibkr/disconnect!) (catch Throwable _)))))))
+
 (defmethod run-subcommand :refresh-short-interest [_ opts _]
   (let [ds      (ds-of opts)
         symbols (resolve-symbols opts ds)]
@@ -172,7 +183,7 @@
 
 (def ^:private valid-phases
   #{"portfolio" "daily" "intraday" "news" "fundamentals" "filings"
-    "iv-daily" "short-interest" "earnings" "universes"})
+    "iv-daily" "pc-ratios" "short-interest" "earnings" "universes"})
 
 (defmethod run-subcommand :refresh-all [_ opts args]
   ;; Positional universe wins over --universe when no --symbols was given.
@@ -200,10 +211,11 @@
         do-fund?      (if only-set (in-only? "fundamentals")   (not (:no-fundamentals opts)))
         do-filings?   (if only-set (in-only? "filings")        (not (:no-filings opts)))
         do-ivdaily?   (if only-set (in-only? "iv-daily")       (not (:no-iv-daily opts)))
+        do-pc-ratios? (if only-set (in-only? "pc-ratios")      (not (:no-pc-ratios opts)))
         do-short?     (if only-set (in-only? "short-interest") (not (:no-short-interest opts)))
         do-earnings?  (if only-set (in-only? "earnings")       (not (:no-earnings opts)))
         do-univ?      (if only-set (in-only? "universes")      (not (:no-universes opts)))
-        needs-ib?     (or do-portfolio? do-daily? do-intraday? do-news? do-ivdaily?)
+        needs-ib?     (or do-portfolio? do-daily? do-intraday? do-news? do-ivdaily? do-pc-ratios?)
         run-start     (System/currentTimeMillis)
         conn          (when needs-ib? (open-ib! cfg))
         opts'         (cond-> (assoc opts :ds ds :ibkr-config (:ibkr cfg))
@@ -233,6 +245,7 @@
                       do-news?      (conj (run-phase! :news            :refresh-news))
                       do-fund?      (conj (run-phase! :fundamentals    :refresh-fundamentals))
                       do-filings?   (conj (run-phase! :filings         :refresh-filings))
+                      do-pc-ratios? (conj (run-phase! :pc-ratios       :refresh-pc-ratios))
                       do-short?     (conj (run-phase! :short-interest  :refresh-short-interest))
                       do-earnings?  (conj (run-phase! :earnings        :refresh-earnings))
                       do-univ?      (conj (run-phase! :universes       :refresh-universes))
