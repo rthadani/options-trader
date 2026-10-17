@@ -178,6 +178,24 @@
   (supported-symbols [_]     :all)
   (supported-periods [_]     #{:annual :quarterly}))
 
+(defn normalize-edgar-quarterly
+  "Produce a seq of per-period canonical maps from the quarterly statement
+   datasets in the EDGAR fundamentals payload (the :-q keys from fetch).
+   Returns nil when no quarterly data is available."
+  [{:keys [symbol metadata income-q balance-q cashflow-q] :as _payload}]
+  (let [periods (merge-period (concat (ds->canonical-rows income-q)
+                                      (ds->canonical-rows balance-q)
+                                      (ds->canonical-rows cashflow-q)))]
+    (when (seq periods)
+      (mapv (fn [p]
+              (assoc p
+                     :symbol   symbol
+                     :source   :edgar
+                     :as-of    (:period-end p)
+                     :period   :quarterly
+                     :metadata metadata))
+            periods))))
+
 (deftype EdgarFundamentalsSource [user-agent]
   IFundamentalsSource
   (fetch [_ symbol params callback]
@@ -185,14 +203,20 @@
       (when-not (ensure-edgar-init! (or (:user-agent params) user-agent))
         (throw (ex-info "EDGAR User-Agent not configured — pass :user-agent or set EDGAR_USER_AGENT"
                         {:symbol symbol})))
-      (let [shape (or (:shape params) :wide)]
-        (callback [{:type     :fundamental-data
-                    :symbol   symbol
-                    :source   :edgar
-                    :metadata (edgar/company-metadata symbol)
-                    :income   (edgar/income   symbol :shape shape)
-                    :balance  (edgar/balance  symbol :shape shape)
-                    :cashflow (edgar/cashflow symbol :shape shape)}])
+      (let [shape (or (:shape params) :wide)
+            ;; quarterly calls share the 1-hour in-process cache with the
+            ;; annual calls above — no extra HTTP download per symbol
+            q     (fn [f] (try (f symbol :shape shape :form "10-Q") (catch Throwable _ nil)))]
+        (callback [{:type       :fundamental-data
+                    :symbol     symbol
+                    :source     :edgar
+                    :metadata   (edgar/company-metadata symbol)
+                    :income     (edgar/income   symbol :shape shape)
+                    :balance    (edgar/balance  symbol :shape shape)
+                    :cashflow   (edgar/cashflow symbol :shape shape)
+                    :income-q   (q edgar/income)
+                    :balance-q  (q edgar/balance)
+                    :cashflow-q (q edgar/cashflow)}])
         :ok)
       (catch Throwable t
         (log/warnf t "edgar fundamentals failed for %s" symbol)

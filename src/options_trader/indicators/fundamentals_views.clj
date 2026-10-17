@@ -224,15 +224,19 @@
                      (-> tally (update :skipped inc) (assoc :oom-streak 0)))
 
                  :else
-                 (let [norm  (fund/normalise-fundamentals raw source)
-                       close (latest-close ds sym)
-                       rs    (ratios norm close)
-                       iv    (iv15 norm close)
-                       row   (merge rs iv)]
+                 (let [norm    (fund/normalise-fundamentals raw source)
+                       close   (latest-close ds sym)
+                       rs      (ratios norm close)
+                       iv      (iv15 norm close)
+                       row     (merge rs iv)
+                       q-perds (fund/normalize-edgar-quarterly raw)]
                    (persist-fundamentals! ds sym (str (:as-of norm)) norm)
+                   (doseq [qp q-perds]
+                     (persist-fundamentals! ds sym (str (:as-of qp)) qp))
                    (upsert-row! ds sym row)
-                   (log/infof "fundamentals [%d/%d] %s ok (as-of %s)"
-                              (inc i) total sym (:as-of norm))
+                   (log/infof "fundamentals [%d/%d] %s ok (as-of %s%s)"
+                              (inc i) total sym (:as-of norm)
+                              (if (seq q-perds) (str ", +" (count q-perds) "q") ""))
                    (-> tally (update :ok inc) (assoc :oom-streak 0)))))
              (catch OutOfMemoryError t
                (log/warnf "fundamentals [%d/%d] %s OOM — heap wedged" (inc i) total sym)
