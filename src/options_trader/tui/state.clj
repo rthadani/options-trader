@@ -42,6 +42,7 @@
    :watchlist-subs   {}
    :portfolio-offset 0
    :watchlist-offset 0
+   :popup            nil
    :stream {:pnl-rid          nil
             :pnl-single-rids  {}              ;; conid → req-id
             :counters         {:update-portfolio      0

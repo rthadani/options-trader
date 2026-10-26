@@ -63,6 +63,43 @@
               (recur (subs remaining width) (conj acc (subs remaining 0 width)))))))
       lines))))
 
+(defn- render-popup
+  "Render a full-terminal overlay showing the full text of one message.
+   Replaces the normal view when (:popup state) is set."
+  [{:keys [text role scroll] :or {scroll 0}} width height]
+  (let [pw      (min (max 20 (- width 4)) 100)
+        ph      (max 10 (min (- height 4) 30))
+        px      (quot (- width pw) 2)
+        py      (quot (- height ph) 2)
+        inner-w (- pw 2)
+        ;; 6 rows of chrome: top + title + title-sep + foot-sep + foot + bottom
+        inner-h (max 1 (- ph 6))
+        content (wrap-text (or text "") inner-w)
+        total   (count content)
+        scr     (max 0 (min scroll (max 0 (- total inner-h))))
+        visible (vec (take inner-h (drop scr content)))
+        title   (pad (str " " (name (or role :message))) inner-w)
+        hr      (apply str (repeat inner-w \─))
+        foot    (pad (str (if (pos? scr) "↑ " "  ")
+                          "Esc to close"
+                          (if (> total (+ scr inner-h)) " ↓" "  "))
+                     inner-w)
+        box-row (fn [r]
+                  (cond
+                    (zero? r)       (str "┌" hr "┐")
+                    (= r 1)         (str "│" title "│")
+                    (= r 2)         (str "├" hr "┤")
+                    (= r (- ph 3)) (str "├" hr "┤")
+                    (= r (- ph 2)) (str "│" foot "│")
+                    (= r (- ph 1)) (str "└" hr "┘")
+                    :else           (str "│" (pad (nth visible (- r 3) "") inner-w) "│")))
+        make-row (fn [term-r]
+                   (let [pr (- term-r py)]
+                     (if (or (< pr 0) (>= pr ph))
+                       (pad "" width)
+                       (str (pad "" px) (box-row pr) (pad "" (max 0 (- width px pw)))))))]
+    (str/join "\n" (mapv make-row (range height)))))
+
 (defn- role-prefix [role]
   (case role
     :user      "❯"
@@ -242,9 +279,15 @@
                      port-only
                      (let [wl (watchlist/panel-lines state port-h)]
                        (mapv (fn [p w] (str p "│" w)) port-only wl)))
-        all-lines  (mapcat #(message-lines % width) (:messages state))
-        all-v      (vec all-lines)
-        total-lines (count all-v)
+        indexed-pairs (vec (mapcat
+                           (fn [msg-idx msg]
+                             (when-let [lines (message-lines msg width)]
+                               (map #(vector % msg-idx) lines)))
+                           (range (count (:messages state)))
+                           (:messages state)))
+        all-v        (mapv first  indexed-pairs)
+        msg-indices  (mapv second indexed-pairs)
+        total-lines  (count all-v)
         scroll    (min (:scroll-offset state 0) (max 0 (- total-lines chat-h)))
         visible   (subvec all-v (max 0 (- total-lines chat-h scroll))
                           (min total-lines (max 0 (- total-lines scroll))))
@@ -275,11 +318,20 @@
                       (if (:streaming? state)
                         (str agent-tag "  ──  thinking...  ──  esc to cancel")
                         (str agent-tag "  ──  " help-msg)))
-        footer    (concat [bot-line] input-lines [(pad (str " " status) width)])]
-    (str/join "\n"
-              (concat
-               port-lines
-               [top-line]
-               (for [ln chat-lines]
-                 (pad-ansi ln width))
-               footer))))
+        footer    (concat [bot-line] input-lines [(pad (str " " status) width)])
+        layout    {:port-h      port-h
+                   :chat-start  (inc port-h)
+                   :chat-h      chat-h
+                   :scroll      scroll
+                   :total-lines total-lines
+                   :msg-indices msg-indices}]
+    {:view   (if (:popup state)
+               (render-popup (:popup state) width height)
+               (str/join "\n"
+                         (concat
+                          port-lines
+                          [top-line]
+                          (for [ln chat-lines]
+                            (pad-ansi ln width))
+                          footer)))
+     :layout layout}))

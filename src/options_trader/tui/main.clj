@@ -44,6 +44,7 @@
 ;; before each spawn and cleared in the spawn's finally block. Single in-flight
 ;; request invariant — the TUI rejects new sends while :streaming? is true.
 (defonce ^:private running-proc-atom (atom nil))
+(defonce ^:private last-layout       (atom nil))
 (def state-width (atom 80))
 (def state-height (atom 24))
 
@@ -1031,23 +1032,53 @@
   (swap! st/state assoc :cursor (count (:input state))))
 
 (defn process-mouse
-  "Handle mouse events — currently scroll-wheel up/down to scroll the chat.
-   Works regardless of focus so you can scroll while typing."
+  "Handle mouse events. Wheel scrolls chat; left click on a chat line opens popup."
   [event]
-  (case (:wheel event)
-    :wheel-up   (st/adjust-scroll! -3)
-    :wheel-down (st/adjust-scroll! 3)
-    nil))
+  (cond
+    (= :wheel-up   (:wheel event)) (st/adjust-scroll! -3)
+    (= :wheel-down (:wheel event)) (st/adjust-scroll! 3)
+
+    (and (= :left (:button event)) (not (:popup @st/state)))
+    (when-let [{:keys [chat-start chat-h scroll total-lines msg-indices]} @last-layout]
+      (let [chat-local (- (:y event) chat-start)]
+        (when (and (>= chat-local 0) (< chat-local chat-h))
+          (let [vis-start (max 0 (- total-lines chat-h scroll))
+                all-idx   (+ vis-start chat-local)]
+            (when-let [msg-idx (get msg-indices all-idx)]
+              (let [msg (nth (:messages @st/state) msg-idx nil)]
+                (when (seq (:text msg))
+                  (swap! st/state assoc :popup
+                         {:text (:text msg) :role (:role msg) :scroll 0}))))))))
+
+    (and (= :left (:button event)) (:popup @st/state))
+    (swap! st/state dissoc :popup)))
 
 (defn process-key [event]
   (let [state @st/state
         focus (:focus state)
         k     (:key event)
         ctrl  (:ctrl event)]
-    (cond
-      (and ctrl (= "c" k))
-      (do (try (tui-ibkr/disconnect!) (catch Throwable _))
-          (st/quit!))
+    (if (:popup state)
+      (cond
+        (or (= :escape k) (= :enter k))
+        (swap! st/state dissoc :popup)
+
+        (= :up k)
+        (swap! st/state update-in [:popup :scroll] #(max 0 (dec (or % 0))))
+
+        (= :down k)
+        (swap! st/state update-in [:popup :scroll] #(inc (or % 0)))
+
+        (= :page-up k)
+        (swap! st/state update-in [:popup :scroll] #(max 0 (- (or % 0) 5)))
+
+        (= :page-down k)
+        (swap! st/state update-in [:popup :scroll] #(+ (or % 0) 5)))
+
+      (cond
+        (and ctrl (= "c" k))
+        (do (try (tui-ibkr/disconnect!) (catch Throwable _))
+            (st/quit!))
 
       ;; Esc cancels the in-flight agent request (any focus).
       (= :escape k)
@@ -1098,7 +1129,7 @@
         (= :up k)         (st/recall-prev!)
         (= :down k)       (st/recall-next!)
         k                 (on-char state k)
-        :else nil))))
+        :else nil)))))
 
 (defonce ^:private last-render-ns (atom 0))
 
@@ -1115,7 +1146,9 @@
         gap-ns     (- t0 (long @last-render-ns))]
     (when (or (not streaming?) (>= gap-ns min-streaming-frame-ns))
       (reset! last-render-ns t0)
-      (render/render! renderer (render-ui/render state @state-width @state-height))
+      (let [{:keys [view layout]} (render-ui/render state @state-width @state-height)]
+        (render/render! renderer view)
+        (reset! last-layout layout))
       (let [dur-ms (/ (- (System/nanoTime) t0) 1e6)]
         (when (> dur-ms 50)
           (log/warnf "slow render: %.1fms streaming?=%s msg-count=%d activity-count=%d"
