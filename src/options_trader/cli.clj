@@ -32,6 +32,7 @@
    [nil  "--no-filings"       "refresh-all: skip filings phase"       :default false]
    [nil  "--no-universes"     "refresh-all: skip universes phase"     :default false]
    [nil  "--no-indicators"    "refresh-daily: skip derived-indicator recompute (bars only)" :default false]
+   [nil  "--force"             "Re-fetch all data, ignoring cached or already-fresh records" :default false]
    [nil  "--allow-orders"     "Enable order execution"                :default false]])
 
 (defn- print-usage [summary]
@@ -127,7 +128,9 @@
                (:symbols opts)  (mapv str/trim (str/split (:symbols opts) #","))
                (:universe opts) (resolve-symbols opts ds)
                :else            nil)]
-    (refresh/refresh-fundamentals! (cond-> {:ds ds} syms (assoc :symbols syms)))))
+    (refresh/refresh-fundamentals! (cond-> {:ds ds}
+                                     syms         (assoc :symbols syms)
+                                     (:force opts) (assoc :force true)))))
 
 (defmethod run-subcommand :refresh-filings [_ opts _]
   (let [ds      (ds-of opts)
@@ -145,7 +148,8 @@
       (refresh/refresh-iv-daily! {:conn        conn
                                   :ds          ds
                                   :symbols     symbols
-                                  :ibkr-config ibkr})
+                                  :ibkr-config ibkr
+                                  :force       (:force opts)})
       (finally (when-not (:conn opts) (try (ibkr/disconnect!) (catch Throwable _)))))))
 
 (defmethod run-subcommand :refresh-pc-ratios [_ opts _]

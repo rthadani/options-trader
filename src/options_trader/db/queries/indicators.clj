@@ -32,6 +32,18 @@
   [ds symbol]
   (query-scalar ds (latest-close-sqlvec {:symbol symbol}) :close))
 
+(defn existing-fundamentals-periods
+  "Set of period strings already present in fundamentals for symbol."
+  [ds symbol]
+  (into #{} (map :period)
+        (jdbc/execute! ds (existing-fundamentals-periods-sqlvec {:symbol symbol}) as-lower)))
+
+(defn fundamentals-age-days
+  "Days since the most recent fundamentals row was fetched for symbol.
+   Returns nil when no rows exist."
+  [ds symbol]
+  (query-scalar ds (fundamentals-age-days-sqlvec {:symbol symbol}) :age_days))
+
 (defn persist-fundamentals!
   "Upsert one row into fundamentals keyed on (symbol, period). data is
    the JSON-serialised canonical payload (caller responsible for the

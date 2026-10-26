@@ -104,6 +104,31 @@ yourself. Instead:
    `ALTER TABLE` and backfills on the next refresh.
 3. After the refresh you can use the new column normally.
 
+## Tiered analysis — match fetch depth to the question
+
+**Quick overview / "analyze X" / "what's going on with X"**
+Use exactly these tools, in order, and stop:
+1. `get_indicators` — price, volume, IV rank, technical levels, ratios
+2. `fetch_news` — recent headlines
+3. `portfolio_summary` — check if held (skip if already called this session)
+
+Do NOT call `fetch_option_chain`, `fetch_option_quote`, `fetch_filings`,
+`fetch_fundamentals`, or `fetch_earnings_history` unless the user's message
+specifically mentions options, filings, earnings, or fundamentals. Those
+fetches are slow and not needed for a price/momentum overview.
+
+**Options question ("what's a good strike", "IV looks high", "show me the chain")**
+Then and only then:
+1. `fetch_option_chain` — chain structure (expirations + strikes); call ONCE
+2. `fetch_option_quote` — only for the specific contract(s) under discussion
+
+**Fundamentals / filings question**
+`fetch_fundamentals`, `fetch_filings`, `fetch_filing_item` as needed.
+
+**Do not re-fetch within a turn.** If you already called `fetch_news` for a
+symbol this turn, use those results — do not call it again. Same for
+`fetch_option_chain` and `get_indicators`.
+
 ## House Rules
 
 ### No fabricated numbers (HARD RULE)

@@ -200,7 +200,7 @@
    (refresh-fundamentals-views! ds (fund/make-source {:type :edgar}) {}))
   ([ds source]
    (refresh-fundamentals-views! ds source {}))
-  ([ds source {:keys [symbols]}]
+  ([ds source {:keys [symbols max-age-days] :or {max-age-days 30}}]
    (ensure-schema! ds)
    (let [syms        (or (seq symbols) (q/all-bars-daily-symbols ds))
          total       (count syms)
@@ -211,41 +211,51 @@
              (throw (ex-info (str "aborting fundamentals: " oom-streak
                                   " consecutive OOMs — heap is wedged, bump -Xmx")
                              (assoc tally :aborted-at i :total total))))
-           (try
-             (let [p   (promise)
-                   _   (fund/fetch-fundamentals sym {} source
-                         (fn [evs] (deliver p evs)))
-                   evs (deref p 30000 nil)
-                   raw (first evs)]
-               (cond
-                 (or (nil? raw) (= :error (:type raw)))
-                 (do (log/infof "fundamentals [%d/%d] %s skipped (%s)"
-                                (inc i) total sym (:message raw))
-                     (-> tally (update :skipped inc) (assoc :oom-streak 0)))
+           (let [age (q/fundamentals-age-days ds sym)]
+             (if (and age (< age max-age-days))
+               (do (log/debugf "fundamentals [%d/%d] %s cached (%d days old)"
+                               (inc i) total sym age)
+                   (-> tally (update :skipped inc) (assoc :oom-streak 0)))
+               (try
+                 (let [p   (promise)
+                       _   (fund/fetch-fundamentals sym {} source
+                             (fn [evs] (deliver p evs)))
+                       evs (deref p 30000 nil)
+                       raw (first evs)]
+                   (cond
+                     (or (nil? raw) (= :error (:type raw)))
+                     (do (log/infof "fundamentals [%d/%d] %s skipped (%s)"
+                                    (inc i) total sym (:message raw))
+                         (-> tally (update :skipped inc) (assoc :oom-streak 0)))
 
-                 :else
-                 (let [norm    (fund/normalise-fundamentals raw source)
-                       close   (latest-close ds sym)
-                       rs      (ratios norm close)
-                       iv      (iv15 norm close)
-                       row     (merge rs iv)
-                       q-perds (fund/normalize-edgar-quarterly raw)]
-                   (persist-fundamentals! ds sym (str (:as-of norm)) norm)
-                   (doseq [qp q-perds]
-                     (persist-fundamentals! ds sym (str (:as-of qp)) qp))
-                   (upsert-row! ds sym row)
-                   (log/infof "fundamentals [%d/%d] %s ok (as-of %s%s)"
-                              (inc i) total sym (:as-of norm)
-                              (if (seq q-perds) (str ", +" (count q-perds) "q") ""))
-                   (-> tally (update :ok inc) (assoc :oom-streak 0)))))
-             (catch OutOfMemoryError t
-               (log/warnf "fundamentals [%d/%d] %s OOM — heap wedged" (inc i) total sym)
-               (System/gc)
-               (-> tally (update :failed inc) (update :oom-streak inc)))
-             (catch Throwable t
-               (log/warnf "fundamentals [%d/%d] %s failed: %s"
-                          (inc i) total sym (.getMessage t))
-               (-> tally (update :failed inc) (assoc :oom-streak 0)))))]
+                     :else
+                     (let [norm      (fund/normalise-fundamentals raw source)
+                           close     (latest-close ds sym)
+                           rs        (ratios norm close)
+                           iv        (iv15 norm close)
+                           row       (merge rs iv)
+                           q-perds   (fund/normalize-edgar-quarterly raw)
+                           existing  (q/existing-fundamentals-periods ds sym)
+                           q-new     (remove #(contains? existing (str (:as-of %))) q-perds)]
+                       (persist-fundamentals! ds sym (str (:as-of norm)) norm)
+                       (doseq [qp q-new]
+                         (persist-fundamentals! ds sym (str (:as-of qp)) qp))
+                       (upsert-row! ds sym row)
+                       (log/infof "fundamentals [%d/%d] %s ok (as-of %s%s)"
+                                  (inc i) total sym (:as-of norm)
+                                  (cond
+                                    (seq q-new)   (str ", +" (count q-new) "q new")
+                                    (seq q-perds) (str ", " (count q-perds) "q cached")
+                                    :else         ""))
+                       (-> tally (update :ok inc) (assoc :oom-streak 0)))))
+                 (catch OutOfMemoryError t
+                   (log/warnf "fundamentals [%d/%d] %s OOM — heap wedged" (inc i) total sym)
+                   (System/gc)
+                   (-> tally (update :failed inc) (update :oom-streak inc)))
+                 (catch Throwable t
+                   (log/warnf "fundamentals [%d/%d] %s failed: %s"
+                              (inc i) total sym (.getMessage t))
+                   (-> tally (update :failed inc) (assoc :oom-streak 0)))))))]
      (log/infof "fundamentals: processing %d symbols" total)
      (-> (reduce step! {:ok 0 :skipped 0 :failed 0 :oom-streak 0}
                  (map-indexed vector syms))

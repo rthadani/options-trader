@@ -107,13 +107,13 @@
     dir))
 
 (defn- seed-overlay-md!
-  "Seed <config-root>/CLAUDE.md from the .example resource on first run.
-   The TUI's runtime-context loader picks it up as the overlay layer
-   between the packaged base prompt and the per-spawn dynamic block."
+  "Seed <config-root>/CLAUDE.md from the packaged runtime prompt on first run.
+   This is the single authoritative prompt file — edit it directly to change
+   agent behaviour. It is never overwritten after the initial seed."
   []
   (let [target (io/file (paths/runtime-claude-overlay-md))]
     (when-not (.exists target)
-      (when-let [src (io/resource "runtime/claude/CLAUDE.md.example")]
+      (when-let [src (io/resource "runtime/CLAUDE.md")]
         (.mkdirs (.getParentFile target))
         (with-open [in (io/input-stream src)]
           (io/copy in target))))

@@ -360,12 +360,15 @@
 
 
 (defn refresh-fundamentals!
-  [{:keys [ds symbols]}]
+  [{:keys [ds symbols force]}]
   (with-log ds :fundamentals nil
-    (log/infof "fundamentals: pulling from EDGAR (%s)..."
-               (if symbols (str (count symbols) " symbols") "all symbols in bars_daily"))
+    (log/infof "fundamentals: pulling from EDGAR (%s%s)..."
+               (if symbols (str (count symbols) " symbols") "all symbols in bars_daily")
+               (if force " [force]" ""))
     (let [t0 (System/currentTimeMillis)
-          r  (indicators/refresh-fundamentals! ds (cond-> {} symbols (assoc :symbols symbols)))]
+          r  (indicators/refresh-fundamentals! ds (cond-> {}
+                                                     symbols (assoc :symbols symbols)
+                                                     force   (assoc :max-age-days 0)))]
       (log/infof "fundamentals done in %.1fs"
                  (/ (- (System/currentTimeMillis) t0) 1000.0))
       r)))
@@ -597,7 +600,7 @@
    of a multi-minute wait. Forces parallelism=1 because the reconnect
    would orphan in-flight requests; without ibkr-config it falls back
    to blocking on await-hist-slot!."
-  [{:keys [conn ds symbols timeout-ms ibkr-config] :or {timeout-ms 15000}}]
+  [{:keys [conn ds symbols timeout-ms ibkr-config force] :or {timeout-ms 15000}}]
   (with-log ds :iv-daily nil
     (binding [*parallelism* (if ibkr-config 1 (min *parallelism* 4))
               *fail-fast-consecutive* 25]
@@ -605,7 +608,7 @@
             count-atom (atom 0)]
         (each-symbol! :iv-daily symbols
           (fn [sym]
-            (if (iv-is-fresh? ds sym)
+            (if (and (not force) (iv-is-fresh? ds sym))
               {:rows 0}
               (let [last-d (q/latest-iv-date ds sym)
                     dur    (iv-duration-for-gap last-d)

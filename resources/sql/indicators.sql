@@ -39,6 +39,14 @@ WITH w AS (
 SELECT close FROM bars_daily WHERE symbol = :symbol
  ORDER BY bar_date DESC LIMIT 1;
 
+-- :name fundamentals-age-days :? :1
+SELECT DATE_DIFF('day', MAX(fetched_at)::DATE, current_date) AS age_days
+FROM fundamentals
+WHERE symbol = :symbol;
+
+-- :name existing-fundamentals-periods :? :*
+SELECT period FROM fundamentals WHERE symbol = :symbol;
+
 -- :name persist-fundamentals :! :n
 INSERT INTO fundamentals (symbol, period, fetched_at, data)
 VALUES (:symbol, :period, current_timestamp, :data)
