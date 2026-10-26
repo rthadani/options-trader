@@ -68,10 +68,15 @@
 
 (defn append-chat!
   "Append directly to the visible chat, bypassing the activity-stream redirect.
-   Use this for slash-command feedback the user must see."
-  [role text]
-  (swap! state update :messages
-         (fn [msgs] (conj (vec msgs) {:role role :text text}))))
+   Use this for slash-command feedback the user must see.
+   Optional extra map is merged into the message row (e.g. {:detail full-text})."
+  ([role text] (append-chat! role text nil))
+  ([role text extra]
+   (swap! state update :messages
+          (fn [msgs]
+            (conj (vec msgs)
+                  (cond-> {:role role :text text}
+                    extra (merge extra)))))))
 
 (defn append-message!
   "Append to the conversation. :system messages are routed to the activity

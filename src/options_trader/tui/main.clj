@@ -101,6 +101,12 @@
         hint (some #(get in %) [:symbol :name :query :sql :path :file_path :command])]
     (str (:name tu) (when hint (str " " (subs (str hint) 0 (min 40 (count (str hint)))))))))
 
+(defn- tool-detail [tu]
+  (let [in (:input tu)]
+    (if (empty? in)
+      (:name tu)
+      (str (:name tu) "\n" (json/generate-string in {:pretty true})))))
+
 
 (defn handle-event [ev sid-atom]
   (let [t (:type ev)
@@ -119,7 +125,7 @@
           (st/append-activity! :thinking th)
           (a/>!! refresh-chan :refresh))
         (doseq [tu (tool-use-blocks content)]
-          (st/append-chat! :tool (tool-summary tu))
+          (st/append-chat! :tool (tool-summary tu) {:detail (tool-detail tu)})
           (a/>!! refresh-chan :refresh))
         (doseq [t (text-blocks content)]
           (st/append-message! :assistant t)
@@ -147,13 +153,17 @@
     ;; the agent attempted and whether each call succeeded. Errors used to
     ;; route to :activity (invisible) and the agent would silently stall
     ;; after one tool failed.
-    (let [label (if (:start? ev)
-                  (str "🔧 " (:name ev) " "
-                       (when-let [a (:args ev)]
-                         (let [s (pr-str a)]
-                           (if (> (count s) 60) (str (subs s 0 60) "…") s))))
-                  (str (if (:error? ev) "✗ " "✓ ") (:name ev)))]
-      (st/append-chat! :tool label)
+    (let [start? (:start? ev)
+          label  (if start?
+                   (str "🔧 " (:name ev) " "
+                        (when-let [a (:args ev)]
+                          (let [s (pr-str a)]
+                            (if (> (count s) 60) (str (subs s 0 60) "…") s))))
+                   (str (if (:error? ev) "✗ " "✓ ") (:name ev)))
+          detail (when (and start? (:args ev))
+                   (str "🔧 " (:name ev) "\n"
+                        (json/generate-string (:args ev) {:pretty true})))]
+      (st/append-chat! :tool label (when detail {:detail detail}))
       (a/>!! refresh-chan :refresh))
 
     :usage
@@ -1048,7 +1058,9 @@
               (let [msg (nth (:messages @st/state) msg-idx nil)]
                 (when (seq (:text msg))
                   (swap! st/state assoc :popup
-                         {:text (:text msg) :role (:role msg) :scroll 0}))))))))
+                         {:text  (or (:detail msg) (:text msg))
+                          :role  (:role msg)
+                          :scroll 0}))))))))
 
     (and (= :left (:button event)) (:popup @st/state))
     (swap! st/state dissoc :popup)))
