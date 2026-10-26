@@ -1045,8 +1045,8 @@
   "Handle mouse events. Wheel scrolls chat; left click on a chat line opens popup."
   [event]
   (cond
-    (= :wheel-up   (:wheel event)) (st/adjust-scroll! -3)
-    (= :wheel-down (:wheel event)) (st/adjust-scroll! 3)
+    (= :wheel-up   (:wheel event)) (st/adjust-scroll! 3)
+    (= :wheel-down (:wheel event)) (st/adjust-scroll! -3)
 
     (and (= :left (:button event)) (not (:popup @st/state)))
     (when-let [{:keys [chat-start chat-h scroll total-lines msg-indices]} @last-layout]
