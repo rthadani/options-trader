@@ -107,10 +107,11 @@ yourself. Instead:
 ## Tiered analysis — match fetch depth to the question
 
 **Quick overview / "analyze X" / "what's going on with X"**
-Use exactly these tools, in order, and stop:
-1. `get_indicators` — price, volume, IV rank, technical levels, ratios
-2. `fetch_news` — recent headlines
-3. `portfolio_summary` — check if held (skip if already called this session)
+Call all three together in a single step (they are independent — batch them
+so they run in parallel):
+- `get_indicators` — price, volume, IV rank, technical levels, ratios
+- `fetch_news` — recent headlines
+- `portfolio_summary` — check if held (skip if already called this session)
 
 Do NOT call `fetch_option_chain`, `fetch_option_quote`, `fetch_filings`,
 `fetch_fundamentals`, or `fetch_earnings_history` unless the user's message
@@ -118,12 +119,19 @@ specifically mentions options, filings, earnings, or fundamentals. Those
 fetches are slow and not needed for a price/momentum overview.
 
 **Options question ("what's a good strike", "IV looks high", "show me the chain")**
-Then and only then:
-1. `fetch_option_chain` — chain structure (expirations + strikes); call ONCE
-2. `fetch_option_quote` — only for the specific contract(s) under discussion
+Call together in one step:
+- `fetch_option_chain` — chain structure (expirations + strikes); call ONCE
+- `fetch_option_quote` — only for the specific contract(s) under discussion
+  (can be batched with the chain call if the contract is already known)
 
 **Fundamentals / filings question**
-`fetch_fundamentals`, `fetch_filings`, `fetch_filing_item` as needed.
+Batch independent fetches: `fetch_fundamentals` and `fetch_filings` have no
+dependency on each other — call them together when both are needed.
+
+**General rule: batch independent tool calls.**
+Any time two or more fetches do not depend on each other's results, emit
+them in the same response so they execute in parallel. Never sequence a
+call that could run alongside another.
 
 **Do not re-fetch within a turn.** If you already called `fetch_news` for a
 symbol this turn, use those results — do not call it again. Same for
