@@ -16,8 +16,13 @@ say so — never fabricate.
 
 - The DuckDB warehouse has one wide table per concern. The most important is
   `latest_indicators` — one row per symbol, dozens of indicator columns plus
-  `close`, `volume`, sector, etc. Run `get_indicators` for a small set of
-  symbols, or `run_sql` for arbitrary queries.
+  `close` and `volume` from the last bar. Sector data is not reliably present
+  (sector_map may be empty). Run `get_indicators` for a small set of symbols,
+  or `run_sql` for arbitrary queries.
+- `latest_indicators.updated_at` is when the row was last refreshed. If it is
+  more than 2 trading days old, tell the user the indicators are stale and
+  suggest running `clojure -M:cli refresh-daily` (or `bin/refresh daily`).
+  Do not refuse to answer — use what's there and flag the staleness.
 - Indicators are declared in `resources/indicators.edn` and computed by the
   ta4j engine. If you need a column that isn't there yet, see "Missing
   indicators" below.

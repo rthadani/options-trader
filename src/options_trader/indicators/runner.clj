@@ -42,10 +42,11 @@
 
 (defn ensure-schema!
   "Idempotently add a DOUBLE column to latest_indicators for every indicator
-   declared in resources/indicators.edn.  Safe to call multiple times."
+   declared in resources/indicators.edn, plus close and volume from the last bar."
   [ds]
   (let [cfg (load-config)]
-    (q/ensure-double-columns! ds (mapv :column (:indicators cfg)))))
+    (q/ensure-double-columns! ds (into (mapv :column (:indicators cfg))
+                                       [:close :volume]))))
 
 
 
@@ -57,13 +58,17 @@
   [ds specs sym]
   (let [bars (ta4j/load-bars ds sym)]
     (when (pos? (count bars))
-      (let [series (ta4j/ds->ta4j-ohlcv bars)
-            values (into {}
-                         (keep (fn [spec]
-                                 (when-let [v (compute-spec-value series spec)]
-                                   [(:column spec) v])))
-                         specs)]
-        [sym values]))))
+      (let [series   (ta4j/ds->ta4j-ohlcv bars)
+            last-bar (last bars)
+            ohlcv    (cond-> {}
+                       (:close  last-bar) (assoc :close  (double (:close  last-bar)))
+                       (:volume last-bar) (assoc :volume (double (:volume last-bar))))
+            ta4j-vals (into {}
+                            (keep (fn [spec]
+                                    (when-let [v (compute-spec-value series spec)]
+                                      [(:column spec) v])))
+                            specs)]
+        [sym (merge ta4j-vals ohlcv)]))))
 
 (defn refresh-runner-indicators!
   "For every distinct symbol in bars_daily: load OHLCV, build a ta4j
